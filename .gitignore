@@ -1,0 +1,11 @@
+.DS_Store
+DerivedData/
+.build/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+ios/Configuration.xcconfig
+server/node_modules/
+server/dist/
+server/.env
+server/coverage/
