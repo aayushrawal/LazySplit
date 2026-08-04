@@ -18,17 +18,17 @@ enum APIError: LocalizedError {
 }
 
 actor APIClient {
+    private static let defaultBaseURL = URL(string: "https://lazysplit.aayushrawal.com")!
     private let session: URLSession
-    private let baseURL: URL?
+    private let baseURL: URL
 
     init(session: URLSession = .shared) {
         self.session = session
         let raw = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
-        baseURL = raw.flatMap(URL.init(string:))
+        baseURL = raw.flatMap(URL.init(string:)) ?? Self.defaultBaseURL
     }
 
     func request<T: Decodable>(_ path: String, method: String = "GET", body: Encodable? = nil, idempotencyKey: String? = nil) async throws -> T {
-        guard let baseURL else { throw APIError.notConfigured }
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -46,6 +46,11 @@ actor APIClient {
 
     func authenticate(identityToken: String, authorizationCode: String?) async throws {
         let response: SessionResponse = try await request("/v1/auth/apple", method: "POST", body: AppleAuthBody(identityToken: identityToken, authorizationCode: authorizationCode))
+        try KeychainStore.write(response.token, key: "sessionToken")
+    }
+
+    func authenticateForDevelopment(accessCode: String) async throws {
+        let response: SessionResponse = try await request("/v1/auth/development", method: "POST", body: ["accessCode": accessCode])
         try KeychainStore.write(response.token, key: "sessionToken")
     }
 
@@ -76,6 +81,19 @@ actor APIClient {
         let response: ConnectResponse = try await request("/v1/splitwise/connect")
         guard let url = URL(string: response.url) else { throw APIError.invalidResponse }
         return url
+    }
+
+    func disconnectPlaid() async throws {
+        let _: EmptyResponse = try await request("/v1/plaid", method: "DELETE")
+    }
+
+    func disconnectSplitwise() async throws {
+        let _: EmptyResponse = try await request("/v1/splitwise", method: "DELETE")
+    }
+
+    func deleteAccount() async throws {
+        let _: EmptyResponse = try await request("/v1/account", method: "DELETE")
+        KeychainStore.delete("sessionToken")
     }
 
     func registerDevice(token: String, enabled: Bool = true) async throws {

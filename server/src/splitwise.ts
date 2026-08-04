@@ -45,6 +45,14 @@ export async function splitwiseRoutes(app: FastifyInstance): Promise<void> {
     return { friends };
   });
 
+  app.delete("/v1/splitwise", { preHandler: requireUser }, async (request) => {
+    await transaction(async (client) => {
+      await client.query("DELETE FROM splitwise_cache WHERE user_id=$1", [request.userID]);
+      await client.query("DELETE FROM provider_connections WHERE user_id=$1 AND provider='splitwise'", [request.userID]);
+    });
+    return {};
+  });
+
   app.post("/v1/splitwise/publish", { preHandler: requireUser }, async (request, reply) => {
     const key = z.string().min(8).parse(request.headers["idempotency-key"]), body = publishSchema.parse(request.body);
     const existing = await pool.query<{ status_code: number | null; response: unknown }>("SELECT status_code,response FROM idempotency_keys WHERE user_id=$1 AND idempotency_key=$2", [request.userID, key]);
@@ -52,7 +60,7 @@ export async function splitwiseRoutes(app: FastifyInstance): Promise<void> {
     await pool.query("INSERT INTO idempotency_keys(user_id,idempotency_key) VALUES($1,$2) ON CONFLICT DO NOTHING", [request.userID, key]);
     const result = await publishExpense(request.userID, body);
     const responseBody = { expenseID: result };
-    await pool.query("UPDATE idempotency_keys SET status_code=200,response=$1 WHERE user_id=$2 AND idempotency_key=$3", [responseBody, request.userID, key]);
+    await pool.query("UPDATE idempotency_keys SET status_code=200,response=$1::jsonb WHERE user_id=$2 AND idempotency_key=$3", [JSON.stringify(responseBody), request.userID, key]);
     return responseBody;
   });
 }
@@ -65,12 +73,24 @@ async function tokenFor(userID: string): Promise<string> {
 
 async function sw<T>(token: string, path: string, init?: RequestInit): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
-    const response = await fetch(`${apiBase}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init?.headers ?? {}) } });
-    if (response.status === 429 && attempt < 3) { await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt)); continue; }
-    const data = await response.json() as T & { errors?: Record<string, unknown> };
-    if (!response.ok) throw Object.assign(new Error(`Splitwise request failed (${response.status})`), { statusCode: response.status });
-    if (data.errors && Object.keys(data.errors).length > 0) throw Object.assign(new Error(`Splitwise rejected the expense: ${JSON.stringify(data.errors)}`), { statusCode: 422 });
-    return data;
+    try {
+      const response = await fetch(`${apiBase}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init?.headers ?? {}) } });
+      const retryable = response.status === 429 || response.status >= 500;
+      if (retryable && attempt < 3 && (response.status === 429 || !init?.method || init.method === "GET")) {
+        const retryAfter = Number(response.headers.get("retry-after"));
+        await new Promise((resolve) => setTimeout(resolve, Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1_000, 5_000) : 250 * 2 ** attempt));
+        continue;
+      }
+      const data = await response.json() as T & { errors?: Record<string, unknown> };
+      if (!response.ok) throw Object.assign(new Error(`Splitwise request failed (${response.status})`), { statusCode: response.status });
+      if (data.errors && Object.keys(data.errors).length > 0) throw Object.assign(new Error(`Splitwise rejected the expense: ${JSON.stringify(data.errors)}`), { statusCode: 422 });
+      return data;
+    } catch (error) {
+      const isRead = !init?.method || init.method === "GET";
+      const hasStatus = error instanceof Error && "statusCode" in error;
+      if (!isRead || hasStatus || attempt === 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
   }
   throw new Error("Splitwise rate limit retry exhausted");
 }
@@ -82,9 +102,9 @@ async function refreshCache(userID: string): Promise<void> {
     sw<{ groups: unknown[] }>(token, "/get_groups"), sw<{ categories: unknown[] }>(token, "/get_categories")
   ]);
   await pool.query(
-    `INSERT INTO splitwise_cache(user_id,current_user,friends,groups,categories) VALUES($1,$2,$3,$4,$5)
-     ON CONFLICT(user_id) DO UPDATE SET current_user=EXCLUDED.current_user,friends=EXCLUDED.friends,groups=EXCLUDED.groups,categories=EXCLUDED.categories,refreshed_at=now()`,
-    [userID, me.user, friends.friends, groups.groups, categories.categories]);
+    `INSERT INTO splitwise_cache(user_id,splitwise_user,friends,groups,categories) VALUES($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb)
+     ON CONFLICT(user_id) DO UPDATE SET splitwise_user=EXCLUDED.splitwise_user,friends=EXCLUDED.friends,groups=EXCLUDED.groups,categories=EXCLUDED.categories,refreshed_at=now()`,
+    [userID, JSON.stringify(me.user), JSON.stringify(friends.friends), JSON.stringify(groups.groups), JSON.stringify(categories.categories)]);
 }
 
 async function publishExpense(userID: string, body: z.infer<typeof publishSchema>): Promise<number> {
@@ -95,8 +115,8 @@ async function publishExpense(userID: string, body: z.infer<typeof publishSchema
   const remote = await sw<{ expenses: { id: number; details?: string | null }[] }>(token, `/get_expenses?dated_after=${date}T00:00:00Z&dated_before=${date}T23:59:59Z&limit=100`);
   const found = remote.expenses.find((expense) => expense.details?.includes(marker));
   if (found) { await saveDraft(userID, body, marker, found.id); return found.id; }
-  const cache = await pool.query<{ current_user: { id?: number } }>("SELECT current_user FROM splitwise_cache WHERE user_id=$1", [userID]);
-  const selfID = cache.rows[0]?.current_user.id;
+  const cache = await pool.query<{ splitwise_user: { id?: number } }>("SELECT splitwise_user FROM splitwise_cache WHERE user_id=$1", [userID]);
+  const selfID = cache.rows[0]?.splitwise_user.id;
   if (!selfID) { await refreshCache(userID); return publishExpense(userID, body); }
   const friendOwed = body.participants.reduce((sum, item) => sum + item.owedMinor, 0);
   if (friendOwed > body.amountMinor) throw Object.assign(new Error("Participant shares exceed the expense total."), { statusCode: 422 });
@@ -118,9 +138,9 @@ async function publishExpense(userID: string, body: z.infer<typeof publishSchema
 
 async function saveDraft(userID: string, body: z.infer<typeof publishSchema>, marker: string, expenseID: number): Promise<void> {
   await pool.query(
-    `INSERT INTO split_drafts(id,user_id,transaction_id,payload,state,splitwise_expense_id,marker) VALUES($1,$2,$3,$4,'published',$5,$6)
+    `INSERT INTO split_drafts(id,user_id,transaction_id,payload,state,splitwise_expense_id,marker) VALUES($1,$2,$3,$4::jsonb,'published',$5,$6)
      ON CONFLICT(id) DO UPDATE SET state='published',splitwise_expense_id=EXCLUDED.splitwise_expense_id,updated_at=now()`,
-    [body.draftID, userID, body.transactionID, body, expenseID, marker]);
+    [body.draftID, userID, body.transactionID, JSON.stringify(body), expenseID, marker]);
 }
 
 function signedState(userID: string): string {

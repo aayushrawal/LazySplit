@@ -20,6 +20,7 @@ struct RootView: View {
 struct OnboardingView: View {
     @Environment(AppSession.self) private var session
     @State private var isWorking = false
+    @State private var developmentAccessCode = ""
 
     var body: some View {
         ZStack {
@@ -34,15 +35,27 @@ struct OnboardingView: View {
                 }.foregroundStyle(.white)
                 Spacer()
                 #if DEBUG
+                SecureField("Development access code", text: $developmentAccessCode)
+                    .textContentType(.password)
+                    .padding().background(.white.opacity(0.14), in: .rect(cornerRadius: 12))
+                    .foregroundStyle(.white)
                 Button {
-                    session.useDemoMode()
+                    isWorking = true
+                    Task {
+                        do {
+                            try await session.api.authenticateForDevelopment(accessCode: developmentAccessCode)
+                            session.isAuthenticated = true
+                        } catch { session.lastError = error.localizedDescription }
+                        isWorking = false
+                    }
                 } label: {
-                    Label("Continue on this device", systemImage: "iphone")
+                    Label("Connect to LazySplit", systemImage: "server.rack")
                         .font(.headline).frame(maxWidth: .infinity).frame(height: 52)
                 }
                 .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.indigo)
                 .clipShape(.rect(cornerRadius: 14))
-                Text("This Debug build skips cloud sign-in so it can run with a personal development profile.")
+                .disabled(developmentAccessCode.isEmpty || isWorking)
+                Text("The development code is stored only on your Mac and creates a real backend session for Plaid and Splitwise testing.")
                     .font(.caption).foregroundStyle(.white.opacity(0.75))
                 #else
                 SignInWithAppleButton(.continue) { request in

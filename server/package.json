@@ -10,7 +10,10 @@
     "start": "node dist/index.js",
     "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "db:migrate": "tsx src/migrate.ts"
+    "db:migrate": "tsx src/migrate.ts",
+    "development-code:set": "node scripts/set-development-access-code.mjs",
+    "secrets:rotate": "node scripts/rotate-local-secrets.mjs",
+    "tunnel:adopt": "node scripts/adopt-cloudflare-tunnel.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",

@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { decodeProtectedHeader, importJWK, jwtVerify, type JWK } from "jose";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { config } from "./config.js";
@@ -7,6 +8,7 @@ import { pool, transaction } from "./db.js";
 import { requireUser } from "./auth.js";
 
 const plaidBase = `https://${config.PLAID_ENV}.plaid.com`;
+const verificationKeys = new Map<string, JWK>();
 
 type PlaidTransaction = {
   transaction_id: string; account_id: string; amount: number; iso_currency_code: string | null;
@@ -47,7 +49,23 @@ export async function plaidRoutes(app: FastifyInstance): Promise<void> {
     return {};
   });
 
+  app.delete("/v1/plaid", { preHandler: requireUser }, async (request) => {
+    const connections = await pool.query<{ encrypted_token: string }>(
+      "SELECT encrypted_token FROM provider_connections WHERE user_id=$1 AND provider='plaid'",
+      [request.userID]
+    );
+    for (const connection of connections.rows) {
+      await plaid("/item/remove", { access_token: decryptToken(connection.encrypted_token) });
+    }
+    await pool.query("DELETE FROM provider_connections WHERE user_id=$1 AND provider='plaid'", [request.userID]);
+    return {};
+  });
+
   app.post("/v1/plaid/webhook", async (request, reply) => {
+    const signedJWT = request.headers["plaid-verification"];
+    if (typeof signedJWT !== "string" || !request.rawBody || !(await verifyWebhook(signedJWT, request.rawBody))) {
+      return reply.code(401).send({ message: "Invalid Plaid webhook signature." });
+    }
     const body = z.object({ webhook_type: z.string(), webhook_code: z.string(), item_id: z.string() }).passthrough().parse(request.body);
     reply.code(200).send({});
     if (body.webhook_type === "TRANSACTIONS") {
@@ -55,6 +73,27 @@ export async function plaidRoutes(app: FastifyInstance): Promise<void> {
       for (const row of connection.rows) syncConnection(row.id).catch((error) => app.log.error({ err: error, connectionID: row.id }, "Plaid webhook sync failed"));
     }
   });
+}
+
+async function verifyWebhook(signedJWT: string, rawBody: Buffer): Promise<boolean> {
+  try {
+    const header = decodeProtectedHeader(signedJWT);
+    if (header.alg !== "ES256" || !header.kid) return false;
+    let jwk = verificationKeys.get(header.kid);
+    if (!jwk) {
+      const response = await plaid<{ key: JWK & { expired_at?: number | null } }>("/webhook_verification_key/get", { key_id: header.kid });
+      if (response.key.expired_at && response.key.expired_at * 1000 <= Date.now()) return false;
+      jwk = response.key; verificationKeys.set(header.kid, jwk);
+    }
+    const key = await importJWK(jwk, "ES256");
+    const { payload } = await jwtVerify(signedJWT, key, { algorithms: ["ES256"], maxTokenAge: "5 min" });
+    if (typeof payload.request_body_sha256 !== "string") return false;
+    const actual = Buffer.from(createHash("sha256").update(rawBody).digest("hex"));
+    const expected = Buffer.from(payload.request_body_sha256);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
 }
 
 async function hydrateAccounts(userID: string, connectionID: string, accessToken: string): Promise<void> {

@@ -11,9 +11,26 @@ import { splitwiseRoutes } from "./splitwise.js";
 import { transactionRoutes } from "./transactions.js";
 
 const app = Fastify({ logger: { redact: ["req.headers.authorization", "req.body.identityToken", "req.body.publicToken", "access_token", "encrypted_token"] } });
+app.removeContentTypeParser("application/json");
+app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
+  request.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  try { done(null, JSON.parse(request.rawBody.toString("utf8"))); }
+  catch (error) { done(error as Error, undefined); }
+});
 await app.register(cors, { origin: false });
 await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 app.get("/health", async () => ({ status: "ok" }));
+app.get("/.well-known/apple-app-site-association", async (_request, reply) => {
+  reply.type("application/json");
+  return {
+    applinks: {
+      details: [{
+        appIDs: [`${config.APPLE_TEAM_ID}.${config.APPLE_CLIENT_ID}`],
+        components: [{ "/": "/plaid/*", comment: "Plaid OAuth redirect" }]
+      }]
+    }
+  };
+});
 await app.register(authRoutes); await app.register(plaidRoutes); await app.register(splitwiseRoutes); await app.register(transactionRoutes); await app.register(deviceRoutes);
 app.post("/internal/digests/run", async (request, reply) => {
   if (request.headers.authorization !== `Bearer ${config.SESSION_SECRET}`) return reply.code(401).send({ message: "Unauthorized" });

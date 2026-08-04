@@ -285,7 +285,7 @@
 				DEVELOPMENT_TEAM = V2355J9WCX;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_API_BASE_URL = "http://localhost:3000";
+				INFOPLIST_KEY_API_BASE_URL = "https://lazysplit.aayushrawal.com";
 				INFOPLIST_KEY_CFBundleDisplayName = LazySplit;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -317,7 +317,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V2355J9WCX;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_API_BASE_URL = "https://api.example.com";
+				INFOPLIST_KEY_API_BASE_URL = "https://lazysplit.aayushrawal.com";
 				INFOPLIST_KEY_CFBundleDisplayName = LazySplit;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

@@ -189,7 +189,7 @@ struct SettingsView: View {
     @SwiftUI.Environment(AppSession.self) private var session
     @State private var digestEnabled = true
     @State private var plaidMessage: String?
-    @State private var presentingCSV = false
+    @State private var confirmation: DestructiveAction?
     @SwiftUI.Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -197,20 +197,53 @@ struct SettingsView: View {
             Section("Connections") {
                 PlaidConnectRow(message: $plaidMessage)
                 Button { Task { do { openURL(try await session.api.splitwiseConnectURL()) } catch { plaidMessage = error.localizedDescription } } } label: { Label("Connect Splitwise", systemImage: "person.2") }
-                Button { presentingCSV = true } label: { Label("Import card statement", systemImage: "doc.text") }
+                Button("Disconnect all cards", role: .destructive) { confirmation = .plaid }
+                Button("Disconnect Splitwise", role: .destructive) { confirmation = .splitwise }
             }
             Section("Review") {
                 Toggle("Daily review digest", isOn: $digestEnabled).onChange(of: digestEnabled) { _, enabled in if enabled { Task { _ = try? await NotificationService.requestAuthorization() } } }
                 Text("Notifications are sent only when posted charges are waiting for review.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Privacy") {
-                Text("Bank credentials are handled by Plaid. Provider tokens stay encrypted on the LazySplit server. Raw statement files never leave this device.")
+                Text("Bank credentials are handled by Plaid. Provider tokens stay encrypted on the LazySplit server.")
                 Button("Sign out", role: .destructive) { KeychainStore.delete("sessionToken"); session.isAuthenticated = false }
+                Button("Delete account and data", role: .destructive) { confirmation = .account }
             }
             if let plaidMessage { Section { Text(plaidMessage) } }
         }
         .navigationTitle("Settings")
-        .sheet(isPresented: $presentingCSV) { NavigationStack { CSVImportView() } }
+        .confirmationDialog("Are you sure?", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }), titleVisibility: .visible) {
+            Button(confirmation?.buttonTitle ?? "Continue", role: .destructive) { performConfirmedAction() }
+            Button("Cancel", role: .cancel) { confirmation = nil }
+        } message: {
+            Text(confirmation?.message ?? "")
+        }
+    }
+
+    private func performConfirmedAction() {
+        guard let action = confirmation else { return }
+        confirmation = nil
+        Task {
+            do {
+                switch action {
+                case .plaid: try await session.api.disconnectPlaid(); plaidMessage = "Cards disconnected. Imported transaction history remains available."
+                case .splitwise: try await session.api.disconnectSplitwise(); plaidMessage = "Splitwise disconnected."
+                case .account: try await session.api.deleteAccount(); session.isAuthenticated = false
+                }
+            } catch { plaidMessage = error.localizedDescription }
+        }
+    }
+
+    private enum DestructiveAction: Equatable {
+        case plaid, splitwise, account
+        var buttonTitle: String { self == .account ? "Delete account" : "Disconnect" }
+        var message: String {
+            switch self {
+            case .plaid: "LazySplit will revoke all Plaid connections. Existing imported transactions remain until you delete your account."
+            case .splitwise: "LazySplit will delete its stored Splitwise token and cached friends and groups."
+            case .account: "This permanently deletes all LazySplit sessions, connections, transactions, drafts, and settings."
+            }
+        }
     }
 }
 

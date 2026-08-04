@@ -9,6 +9,8 @@ const schema = z.object({
   SESSION_SECRET: z.string().min(16),
   TOKEN_ENCRYPTION_KEY: z.string().min(1),
   APPLE_CLIENT_ID: z.string().min(1),
+  APPLE_TEAM_ID: z.string().min(1),
+  DEVELOPMENT_ACCESS_CODE: z.string().default(""),
   PLAID_CLIENT_ID: z.string().default(""),
   PLAID_SECRET: z.string().default(""),
   PLAID_ENV: z.enum(["sandbox", "development", "production"]).default("sandbox"),

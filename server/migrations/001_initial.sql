@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 CREATE TABLE IF NOT EXISTS splitwise_cache (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  current_user jsonb NOT NULL DEFAULT '{}',
+  splitwise_user jsonb NOT NULL DEFAULT '{}',
   friends jsonb NOT NULL DEFAULT '[]',
   groups jsonb NOT NULL DEFAULT '[]',
   categories jsonb NOT NULL DEFAULT '[]',

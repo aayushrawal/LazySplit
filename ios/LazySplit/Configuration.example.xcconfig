@@ -1,3 +1,3 @@
-API_BASE_URL = http:/$()/localhost:3000
-PLAID_REDIRECT_HOST = example.com
-PRODUCT_BUNDLE_IDENTIFIER = com.example.LazySplit
+API_BASE_URL = https:/$()/lazysplit.aayushrawal.com
+PLAID_REDIRECT_HOST = lazysplit.aayushrawal.com
+PRODUCT_BUNDLE_IDENTIFIER = com.aayushrawal.LazySplit

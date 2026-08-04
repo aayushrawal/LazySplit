@@ -1,4 +1,7 @@
 import "fastify";
 declare module "fastify" {
-  interface FastifyRequest { userID: string }
+  interface FastifyRequest {
+    userID: string;
+    rawBody?: Buffer;
+  }
 }
