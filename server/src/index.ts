@@ -6,6 +6,7 @@ import { authRoutes } from "./auth.js";
 import { config } from "./config.js";
 import { deviceRoutes } from "./devices.js";
 import { sendDueDigests } from "./digest.js";
+import { parseJSONBody } from "./http.js";
 import { plaidRoutes } from "./plaid.js";
 import { splitwiseRoutes } from "./splitwise.js";
 import { transactionRoutes } from "./transactions.js";
@@ -14,7 +15,7 @@ const app = Fastify({ logger: { redact: ["req.headers.authorization", "req.body.
 app.removeContentTypeParser("application/json");
 app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
   request.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
-  try { done(null, JSON.parse(request.rawBody.toString("utf8"))); }
+  try { done(null, parseJSONBody(request.rawBody)); }
   catch (error) { done(error as Error, undefined); }
 });
 await app.register(cors, { origin: false });

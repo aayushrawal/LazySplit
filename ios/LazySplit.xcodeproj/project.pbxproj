@@ -16,6 +16,7 @@
 		A10000000000000000000007 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* XCTest.framework */; };
 		A10000000000000000000008 /* LazySplit.app in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* LazySplit.app */; };
 		A10000000000000000000009 /* LinkKit in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000002 /* LinkKit */; };
+		A1000000000000000000000A /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000004 /* GoogleSignIn */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -53,6 +54,7 @@
 		A20000000000000000000009 /* LazySplitTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LazySplitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000A /* LazySplit.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LazySplit.entitlements; sourceTree = "<group>"; };
 		A2000000000000000000000B /* LazySplitDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LazySplitDebug.entitlements; sourceTree = "<group>"; };
+		A2000000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,6 +63,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000009 /* LinkKit in Frameworks */,
+				A1000000000000000000000A /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -96,6 +99,7 @@
 				A20000000000000000000005 /* SecondaryViews.swift */,
 				A2000000000000000000000A /* LazySplit.entitlements */,
 				A2000000000000000000000B /* LazySplitDebug.entitlements */,
+				A2000000000000000000000C /* Info.plist */,
 			);
 			path = LazySplit;
 			sourceTree = "<group>";
@@ -144,6 +148,7 @@
 			name = LazySplit;
 			packageProductDependencies = (
 				A90000000000000000000002 /* LinkKit */,
+				A90000000000000000000004 /* GoogleSignIn */,
 			);
 			productName = LazySplit;
 			productReference = A20000000000000000000008 /* LazySplit.app */;
@@ -196,6 +201,7 @@
 			mainGroup = A70000000000000000000001;
 			packageReferences = (
 				A90000000000000000000001 /* XCRemoteSwiftPackageReference "plaid-link-ios-spm" */,
+				A90000000000000000000003 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 			);
 			productRefGroup = A70000000000000000000005 /* Products */;
 			projectDirPath = "";
@@ -284,7 +290,12 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V2355J9WCX;
 				ENABLE_TESTABILITY = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				API_BASE_URL = "https://lazysplit.aayushrawal.com";
+				GENERATE_INFOPLIST_FILE = NO;
+				GOOGLE_IOS_CLIENT_ID = "42768217132-tkspd0v0rpcuan22kp5d9u5fhuo55m69.apps.googleusercontent.com";
+				GOOGLE_REVERSED_CLIENT_ID = "com.googleusercontent.apps.42768217132-tkspd0v0rpcuan22kp5d9u5fhuo55m69";
+				GOOGLE_SERVER_CLIENT_ID = "42768217132-59eajmmikhdtj57ti1duh4cheff91r0s.apps.googleusercontent.com";
+				INFOPLIST_FILE = LazySplit/Info.plist;
 				INFOPLIST_KEY_API_BASE_URL = "https://lazysplit.aayushrawal.com";
 				INFOPLIST_KEY_CFBundleDisplayName = LazySplit;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
@@ -316,7 +327,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V2355J9WCX;
-				GENERATE_INFOPLIST_FILE = YES;
+				API_BASE_URL = "https://lazysplit.aayushrawal.com";
+				GENERATE_INFOPLIST_FILE = NO;
+				GOOGLE_IOS_CLIENT_ID = "42768217132-tkspd0v0rpcuan22kp5d9u5fhuo55m69.apps.googleusercontent.com";
+				GOOGLE_REVERSED_CLIENT_ID = "com.googleusercontent.apps.42768217132-tkspd0v0rpcuan22kp5d9u5fhuo55m69";
+				GOOGLE_SERVER_CLIENT_ID = "42768217132-59eajmmikhdtj57ti1duh4cheff91r0s.apps.googleusercontent.com";
+				INFOPLIST_FILE = LazySplit/Info.plist;
 				INFOPLIST_KEY_API_BASE_URL = "https://lazysplit.aayushrawal.com";
 				INFOPLIST_KEY_CFBundleDisplayName = LazySplit;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
@@ -414,6 +430,14 @@
 				minimumVersion = 7.0.0;
 			};
 		};
+		A90000000000000000000003 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -421,6 +445,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A90000000000000000000001 /* XCRemoteSwiftPackageReference "plaid-link-ios-spm" */;
 			productName = LinkKit;
+		};
+		A90000000000000000000004 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A90000000000000000000003 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

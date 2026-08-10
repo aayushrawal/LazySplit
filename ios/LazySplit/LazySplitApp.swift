@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 import UIKit
+#if canImport(GoogleSignIn)
+import GoogleSignIn
+#endif
 
 @main
 struct LazySplitApp: App {
@@ -11,6 +14,11 @@ struct LazySplitApp: App {
         WindowGroup {
             RootView()
                 .environment(session)
+                .onOpenURL { url in
+                    #if canImport(GoogleSignIn)
+                    GIDSignIn.sharedInstance.handle(url)
+                    #endif
+                }
         }
         .modelContainer(for: [TransactionRecord.self, SplitDraft.self, SplitParticipant.self, SuggestionRule.self, ImportBatch.self, ExportAttempt.self])
     }
@@ -37,13 +45,28 @@ extension Notification.Name {
 @Observable
 final class AppSession {
     var isAuthenticated = KeychainStore.read("sessionToken") != nil
+    var isDemoMode = false
     var onboardingStep: OnboardingStep = .welcome
     var lastError: String?
     let api = APIClient()
 
     func useDemoMode() {
+        KeychainStore.delete("sessionToken")
+        isDemoMode = true
         isAuthenticated = true
         onboardingStep = .complete
+    }
+
+    func completeAuthentication() {
+        isDemoMode = false
+        isAuthenticated = true
+        onboardingStep = .complete
+    }
+
+    func signOut() {
+        KeychainStore.delete("sessionToken")
+        isDemoMode = false
+        isAuthenticated = false
     }
 }
 

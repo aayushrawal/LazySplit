@@ -31,10 +31,12 @@ actor APIClient {
     func request<T: Decodable>(_ path: String, method: String = "GET", body: Encodable? = nil, idempotencyKey: String? = nil) async throws -> T {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = KeychainStore.read("sessionToken") { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let idempotencyKey { request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key") }
-        if let body { request.httpBody = try JSONEncoder.api.encode(AnyEncodable(body)) }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder.api.encode(AnyEncodable(body))
+        }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
@@ -51,6 +53,11 @@ actor APIClient {
 
     func authenticateForDevelopment(accessCode: String) async throws {
         let response: SessionResponse = try await request("/v1/auth/development", method: "POST", body: ["accessCode": accessCode])
+        try KeychainStore.write(response.token, key: "sessionToken")
+    }
+
+    func authenticateWithGoogle(identityToken: String) async throws {
+        let response: SessionResponse = try await request("/v1/auth/google", method: "POST", body: ["identityToken": identityToken])
         try KeychainStore.write(response.token, key: "sessionToken")
     }
 

@@ -4,7 +4,7 @@ LazySplit is a native iPhone transaction inbox for reviewing Plaid card charges,
 
 ## Repository
 
-- `ios/` — SwiftUI iOS 17 app using SwiftData, Sign in with Apple, Plaid Link, review gestures, coverage, and an export outbox.
+- `ios/` — SwiftUI iOS 17 app using SwiftData, Google Sign-In, Sign in with Apple, Plaid Link, review gestures, coverage, and an export outbox.
 - `server/` — Fastify/TypeScript API with PostgreSQL migrations, Plaid transaction sync, Splitwise publishing, encrypted provider tokens, and digest-device registration.
 
 ## Run the iPhone app
@@ -26,7 +26,7 @@ Release uses `LazySplit.entitlements`. For live Sign in with Apple and Plaid OAu
 
 Debug builds can use a real backend session without Sign in with Apple. Run `pnpm development-code:set` in `server/`, then `docker compose up -d --force-recreate api worker`; the generated development access code is copied to the Mac clipboard. Paste it into the app's **Development access code** field and tap **Connect to LazySplit**. The endpoint exists only while `NODE_ENV=development` and a code is configured. Use `pnpm secrets:rotate` only for an intentional full rotation because it invalidates sessions and previously encrypted provider tokens.
 
-Without a configured API, the app can still launch in demo mode with representative transactions. Live Plaid linking uses a backend-generated Link token and Plaid LinkKit 7. Associated Domains are required for production OAuth redirects, but not for the sandbox institution flow used by the personal Debug build.
+Without a configured API, the app can still launch in a clearly labelled demo mode; live connection controls are disabled there. Live Plaid linking uses a backend-generated Link token and Plaid LinkKit 7. Real financial institutions require `PLAID_ENV=production`, an approved Plaid Production/Trial account, and its Production secret.
 
 ## Run the API
 
@@ -47,6 +47,7 @@ If Cloudflare was initially configured with a standalone connector, run `pnpm tu
 Copy `server/.env.example` to `server/.env` and fill in:
 
 - **Plaid:** Client ID, environment-specific secret, and environment. In the Plaid dashboard register `https://lazysplit.aayushrawal.com/plaid/callback` as the redirect URI and `https://lazysplit.aayushrawal.com/v1/plaid/webhook` as the Transactions webhook. Subscribe to Transactions webhooks; the endpoint verifies Plaid's signed JWT before processing updates.
+- **Google:** Create one iOS OAuth client for `com.aayushrawal.LazySplit` and one Web OAuth client in the same Google Auth Platform project. Set the Web client ID as `GOOGLE_CLIENT_ID` on the server, and set the iOS client ID, Web client ID, and reversed iOS client ID in the app build settings described by `Configuration.example.xcconfig`.
 - **Splitwise:** OAuth consumer key and secret, with the exact callback `https://lazysplit.aayushrawal.com/v1/splitwise/callback`.
 - **Apple:** Services/App identifier and Team ID. Production Sign in with Apple, Associated Domains, and APNs require an active Apple Developer Program membership.
 - **APNs:** Team ID, key ID, `.p8` private key contents, and the app bundle identifier as the topic.

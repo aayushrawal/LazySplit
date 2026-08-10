@@ -2,6 +2,7 @@
 
 LazySplit processes financial transaction metadata only to help the signed-in user review and publish shared expenses.
 
+- Google or Apple provides the user's sign-in identity. LazySplit verifies provider ID tokens and stores the provider subject identifier and verified email address; provider passwords are never received.
 - Bank authentication is performed by Plaid Link. LazySplit never receives bank usernames or passwords.
 - Plaid and Splitwise access tokens are encrypted on the server and are not placed in the iPhone app.
 - CSV statements are parsed on the iPhone. The original file is not retained or uploaded; normalized transaction fields are synchronized to the user's account.

@@ -7,7 +7,9 @@ import { decryptToken, hash } from "./crypto.js";
 import { pool } from "./db.js";
 
 const appleKeys = createRemoteJWKSet(new URL("https://appleid.apple.com/auth/keys"));
+const googleKeys = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"));
 const appleBody = z.object({ identityToken: z.string().min(1), authorizationCode: z.string().optional().nullable() });
+const googleBody = z.object({ identityToken: z.string().min(1) });
 
 async function createSession(userID: string): Promise<string> {
   const token = randomBytes(32).toString("base64url");
@@ -37,6 +39,39 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
        ON CONFLICT (apple_subject) DO UPDATE SET email = COALESCE(users.email, EXCLUDED.email)
        RETURNING id`, [payload.sub, typeof payload.email === "string" ? payload.email : null]);
     const userID = user.rows[0]!.id;
+    return { token: await createSession(userID) };
+  });
+
+  app.post("/v1/auth/google", async (request, reply) => {
+    if (!config.GOOGLE_CLIENT_ID) return reply.code(503).send({ message: "Google Sign-In is not configured." });
+    const parsed = googleBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ message: "A Google identity token is required." });
+    let payload;
+    try {
+      ({ payload } = await jwtVerify(parsed.data.identityToken, googleKeys, {
+        issuer: ["https://accounts.google.com", "accounts.google.com"],
+        audience: config.GOOGLE_CLIENT_ID
+      }));
+    } catch {
+      return reply.code(401).send({ message: "Google identity token is invalid or expired." });
+    }
+    if (!payload.sub || payload.email_verified !== true || typeof payload.email !== "string") {
+      return reply.code(401).send({ message: "Google did not provide a verified identity." });
+    }
+    const existing = await pool.query<{ id: string }>(
+      "SELECT id FROM users WHERE google_subject=$1 OR (email=$2 AND google_subject IS NULL) ORDER BY google_subject=$1 DESC LIMIT 1",
+      [payload.sub, payload.email]
+    );
+    let userID = existing.rows[0]?.id;
+    if (userID) {
+      await pool.query("UPDATE users SET google_subject=$1,email=$2,deleted_at=NULL WHERE id=$3", [payload.sub, payload.email, userID]);
+    } else {
+      const created = await pool.query<{ id: string }>(
+        "INSERT INTO users(google_subject,email) VALUES($1,$2) RETURNING id",
+        [payload.sub, payload.email]
+      );
+      userID = created.rows[0]!.id;
+    }
     return { token: await createSession(userID) };
   });
 

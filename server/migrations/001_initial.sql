@@ -2,11 +2,15 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  apple_subject text UNIQUE NOT NULL,
+  apple_subject text UNIQUE,
+  google_subject text UNIQUE,
   email text,
   created_at timestamptz NOT NULL DEFAULT now(),
   deleted_at timestamptz
 );
+
+ALTER TABLE users ALTER COLUMN apple_subject DROP NOT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_subject text UNIQUE;
 
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash text PRIMARY KEY,

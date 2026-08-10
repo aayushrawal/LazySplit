@@ -2,6 +2,9 @@ import AuthenticationServices
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(GoogleSignIn)
+import GoogleSignIn
+#endif
 
 struct RootView: View {
     @Environment(AppSession.self) private var session
@@ -44,7 +47,7 @@ struct OnboardingView: View {
                     Task {
                         do {
                             try await session.api.authenticateForDevelopment(accessCode: developmentAccessCode)
-                            session.isAuthenticated = true
+                            session.completeAuthentication()
                         } catch { session.lastError = error.localizedDescription }
                         isWorking = false
                     }
@@ -71,7 +74,7 @@ struct OnboardingView: View {
                     let code = credential.authorizationCode.flatMap { String(data: $0, encoding: .utf8) }
                     isWorking = true
                     Task {
-                        do { try await session.api.authenticate(identityToken: identityToken, authorizationCode: code); session.isAuthenticated = true }
+                        do { try await session.api.authenticate(identityToken: identityToken, authorizationCode: code); session.completeAuthentication() }
                         catch { session.lastError = error.localizedDescription }
                         isWorking = false
                     }
@@ -79,11 +82,43 @@ struct OnboardingView: View {
                 .signInWithAppleButtonStyle(.white)
                 .frame(height: 52).clipShape(.rect(cornerRadius: 14))
                 #endif
-                Button("Explore with demo data") { session.useDemoMode() }
+                Button {
+                    Task { await signInWithGoogle() }
+                } label: {
+                    Label("Continue with Google", systemImage: "g.circle.fill")
+                        .font(.headline).frame(maxWidth: .infinity).frame(height: 52)
+                }
+                .buttonStyle(.bordered).tint(.white).foregroundStyle(.white)
+                .clipShape(.rect(cornerRadius: 14))
+                .disabled(isWorking)
+                Button("Preview demo data (connections disabled)") { session.useDemoMode() }
                     .frame(maxWidth: .infinity).foregroundStyle(.white).padding(.bottom, 12)
             }.padding(28)
             if isWorking { ProgressView().tint(.white) }
         }
+    }
+
+    @MainActor private func signInWithGoogle() async {
+        #if canImport(GoogleSignIn)
+        guard let clientID = Bundle.main.object(forInfoDictionaryKey: "GIDClientID") as? String,
+              let serverClientID = Bundle.main.object(forInfoDictionaryKey: "GIDServerClientID") as? String,
+              !clientID.isEmpty, !serverClientID.isEmpty,
+              let presenting = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow)?.rootViewController else {
+            session.lastError = "Google Sign-In is not configured in this build."
+            return
+        }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID, serverClientID: serverClientID)
+            let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: presenting)
+            guard let identityToken = result.user.idToken?.tokenString else { throw APIError.invalidResponse }
+            try await session.api.authenticateWithGoogle(identityToken: identityToken)
+            session.completeAuthentication()
+        } catch { session.lastError = error.localizedDescription }
+        #else
+        session.lastError = "Google Sign-In is unavailable in this build."
+        #endif
     }
 }
 

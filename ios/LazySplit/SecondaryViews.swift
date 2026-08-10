@@ -197,8 +197,12 @@ struct SettingsView: View {
             Section("Connections") {
                 PlaidConnectRow(message: $plaidMessage)
                 Button { Task { do { openURL(try await session.api.splitwiseConnectURL()) } catch { plaidMessage = error.localizedDescription } } } label: { Label("Connect Splitwise", systemImage: "person.2") }
+                    .disabled(session.isDemoMode)
                 Button("Disconnect all cards", role: .destructive) { confirmation = .plaid }
+                    .disabled(session.isDemoMode)
                 Button("Disconnect Splitwise", role: .destructive) { confirmation = .splitwise }
+                    .disabled(session.isDemoMode)
+                if session.isDemoMode { Text("Sign in with Google or a development code to use live connections.").font(.caption).foregroundStyle(.secondary) }
             }
             Section("Review") {
                 Toggle("Daily review digest", isOn: $digestEnabled).onChange(of: digestEnabled) { _, enabled in if enabled { Task { _ = try? await NotificationService.requestAuthorization() } } }
@@ -206,7 +210,7 @@ struct SettingsView: View {
             }
             Section("Privacy") {
                 Text("Bank credentials are handled by Plaid. Provider tokens stay encrypted on the LazySplit server.")
-                Button("Sign out", role: .destructive) { KeychainStore.delete("sessionToken"); session.isAuthenticated = false }
+                Button("Sign out", role: .destructive) { session.signOut() }
                 Button("Delete account and data", role: .destructive) { confirmation = .account }
             }
             if let plaidMessage { Section { Text(plaidMessage) } }
@@ -259,7 +263,7 @@ private struct PlaidConnectRow: View {
 
     var body: some View {
         Button { Task { await connect() } } label: { Label(loading ? "Preparing secure connection…" : "Connect cards with Plaid", systemImage: "building.columns") }
-            .disabled(loading)
+            .disabled(loading || session.isDemoMode)
         #if canImport(LinkKit)
             .sheet(isPresented: $showingLink) { linkSession?.sheet() }
         #endif
