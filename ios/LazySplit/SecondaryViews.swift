@@ -406,7 +406,11 @@ private struct PlaidConnectRow: View {
 }
 
 enum DemoData {
-    static let friends = [SplitwiseFriend(id: 101, firstName: "Maya", lastName: "Chen"), SplitwiseFriend(id: 102, firstName: "Jordan", lastName: "Lee"), SplitwiseFriend(id: 103, firstName: "Sam", lastName: "Patel")]
+    static let friends = [
+        SplitwiseFriend(id: 101, firstName: "Maya", lastName: "Chen", sortOrder: 0, interactionCount: 12),
+        SplitwiseFriend(id: 102, firstName: "Jordan", lastName: "Lee", sortOrder: 1, interactionCount: 7),
+        SplitwiseFriend(id: 103, firstName: "Sam", lastName: "Patel", sortOrder: 2, interactionCount: 3)
+    ]
     private static let legacyAccountNames: Set<String> = ["Sapphire • 4242", "Freedom • 8811"]
 
     static func isLegacyDemo(_ transaction: TransactionRecord) -> Bool {

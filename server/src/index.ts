@@ -5,6 +5,7 @@ import { ZodError } from "zod";
 import { authRoutes } from "./auth.js";
 import { config } from "./config.js";
 import { deviceRoutes } from "./devices.js";
+import { friendRoutes } from "./friends.js";
 import { sendDueDigests } from "./digest.js";
 import { parseJSONBody } from "./http.js";
 import { plaidRoutes } from "./plaid.js";
@@ -41,7 +42,7 @@ app.get("/plaid/callback", async (_request, reply) => {
 <p style="color:#636366;line-height:1.45">Your bank authorization is complete. Return to the LazySplit app to finish connecting this account.</p>
 </main></body></html>`);
 });
-await app.register(authRoutes); await app.register(plaidRoutes); await app.register(splitwiseRoutes); await app.register(transactionRoutes); await app.register(deviceRoutes);
+await app.register(authRoutes); await app.register(plaidRoutes); await app.register(splitwiseRoutes); await app.register(friendRoutes); await app.register(transactionRoutes); await app.register(deviceRoutes);
 app.post("/internal/digests/run", async (request, reply) => {
   if (request.headers.authorization !== `Bearer ${config.SESSION_SECRET}`) return reply.code(401).send({ message: "Unauthorized" });
   return { sent: await sendDueDigests() };

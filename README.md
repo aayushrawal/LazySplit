@@ -4,7 +4,7 @@ LazySplit is a native iPhone transaction inbox for reviewing Plaid card charges,
 
 ## Repository
 
-- `ios/` — SwiftUI iOS 17 app using SwiftData, Google Sign-In, Sign in with Apple, Plaid Link, review gestures, coverage, and an export outbox.
+- `ios/` — SwiftUI iOS 17 app using SwiftData, Google Sign-In, Sign in with Apple, Plaid Link, review gestures, account coverage, local friend aliases and groups, and an export outbox.
 - `server/` — Fastify/TypeScript API with PostgreSQL migrations, Plaid transaction sync, Splitwise publishing, encrypted provider tokens, and digest-device registration.
 
 ## Run the iPhone app

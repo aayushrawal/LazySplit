@@ -7,6 +7,7 @@ LazySplit processes financial transaction metadata only to help the signed-in us
 - Plaid and Splitwise access tokens are encrypted on the server and are not placed in the iPhone app.
 - CSV statements are parsed on the iPhone. The original file is not retained or uploaded; normalized transaction fields are synchronized to the user's account.
 - Friends do not create LazySplit accounts merely because they are included in an expense. Published expenses are governed by Splitwise's privacy terms.
+- Optional friend aliases, preferred ordering, and friend groups are stored in LazySplit for the signed-in user. They do not rename friends or create groups in Splitwise.
 - Authentication, financial, and provider-token fields are redacted from application logs.
 - A user may disconnect integrations or delete their LazySplit account and associated server-side data.
 

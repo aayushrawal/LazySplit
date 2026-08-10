@@ -71,8 +71,34 @@ actor APIClient {
     }
 
     func friends() async throws -> [SplitwiseFriend] {
-        let response: FriendsResponse = try await request("/v1/splitwise/friends")
+        let response: FriendsResponse = try await request("/v1/friends")
         return response.friends
+    }
+
+    func renameFriend(id: Int, alias: String?) async throws {
+        let _: EmptyResponse = try await request("/v1/friends/\(id)", method: "PATCH", body: FriendAliasBody(alias: alias))
+    }
+
+    func reorderFriends(ids: [Int]) async throws {
+        let _: EmptyResponse = try await request("/v1/friends/order", method: "PUT", body: FriendOrderBody(friendIDs: ids))
+    }
+
+    func friendGroups() async throws -> [FriendGroup] {
+        let response: FriendGroupsResponse = try await request("/v1/friend-groups")
+        return response.groups
+    }
+
+    func createFriendGroup(name: String, friendIDs: [Int]) async throws -> FriendGroup {
+        let response: FriendGroupResponse = try await request("/v1/friend-groups", method: "POST", body: FriendGroupBody(name: name, friendIDs: friendIDs))
+        return response.group
+    }
+
+    func updateFriendGroup(id: UUID, name: String, friendIDs: [Int]) async throws {
+        let _: EmptyResponse = try await request("/v1/friend-groups/\(id.uuidString)", method: "PUT", body: FriendGroupBody(name: name, friendIDs: friendIDs))
+    }
+
+    func deleteFriendGroup(id: UUID) async throws {
+        let _: EmptyResponse = try await request("/v1/friend-groups/\(id.uuidString)", method: "DELETE")
     }
 
     func connections() async throws -> ConnectionOverview {
@@ -257,6 +283,11 @@ private struct AppleAuthBody: Encodable { let identityToken: String; let authori
 private struct LinkTokenResponse: Decodable { let linkToken: String }
 private struct EmptyResponse: Decodable {}
 private struct FriendsResponse: Decodable { let friends: [SplitwiseFriend] }
+private struct FriendAliasBody: Encodable { let alias: String? }
+private struct FriendOrderBody: Encodable { let friendIDs: [Int] }
+private struct FriendGroupBody: Encodable { let name: String; let friendIDs: [Int] }
+private struct FriendGroupsResponse: Decodable { let groups: [FriendGroup] }
+private struct FriendGroupResponse: Decodable { let group: FriendGroup }
 struct ConnectionOverview: Decodable {
     let plaidConnected: Bool
     let plaidConnectionCount: Int

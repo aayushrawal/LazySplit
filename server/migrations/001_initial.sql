@@ -74,6 +74,30 @@ CREATE TABLE IF NOT EXISTS splitwise_cache (
   refreshed_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS friend_preferences (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  splitwise_user_id bigint NOT NULL,
+  alias text,
+  sort_order integer,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(user_id, splitwise_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS friend_groups (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS friend_group_members (
+  group_id uuid NOT NULL REFERENCES friend_groups(id) ON DELETE CASCADE,
+  splitwise_user_id bigint NOT NULL,
+  position integer NOT NULL DEFAULT 0,
+  PRIMARY KEY(group_id, splitwise_user_id)
+);
+
 CREATE TABLE IF NOT EXISTS split_drafts (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,

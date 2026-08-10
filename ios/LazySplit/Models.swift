@@ -162,7 +162,23 @@ struct SplitwiseFriend: Identifiable, Codable, Hashable {
     let id: Int
     let firstName: String
     let lastName: String?
-    var displayName: String { [firstName, lastName].compactMap { $0 }.joined(separator: " ") }
+    let alias: String?
+    let sortOrder: Int?
+    let interactionCount: Int
+    var originalName: String { [firstName, lastName].compactMap { $0 }.joined(separator: " ") }
+    var displayName: String { alias ?? originalName }
+
+    init(id: Int, firstName: String, lastName: String?, alias: String? = nil, sortOrder: Int? = nil, interactionCount: Int = 0) {
+        self.id = id; self.firstName = firstName; self.lastName = lastName; self.alias = alias
+        self.sortOrder = sortOrder; self.interactionCount = interactionCount
+    }
+}
+
+struct FriendGroup: Identifiable, Codable, Hashable {
+    let id: UUID
+    let name: String
+    let friendIDs: [Int]
+    let createdAt: Date
 }
 
 struct CoverageMonth: Identifiable {

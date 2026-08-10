@@ -18,6 +18,7 @@
 		A10000000000000000000009 /* LinkKit in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000002 /* LinkKit */; };
 		A1000000000000000000000A /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000004 /* GoogleSignIn */; };
 		A1000000000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* Assets.xcassets */; };
+		A1000000000000000000000C /* FriendsManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* FriendsManagementView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 		A2000000000000000000000B /* LazySplitDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LazySplitDebug.entitlements; sourceTree = "<group>"; };
 		A2000000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2000000000000000000000E /* FriendsManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsManagementView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -99,6 +101,7 @@
 				A20000000000000000000003 /* Services.swift */,
 				A20000000000000000000004 /* RootView.swift */,
 				A20000000000000000000005 /* SecondaryViews.swift */,
+				A2000000000000000000000E /* FriendsManagementView.swift */,
 				A2000000000000000000000A /* LazySplit.entitlements */,
 				A2000000000000000000000B /* LazySplitDebug.entitlements */,
 				A2000000000000000000000C /* Info.plist */,
@@ -237,6 +240,7 @@
 				A10000000000000000000003 /* Services.swift in Sources */,
 				A10000000000000000000004 /* RootView.swift in Sources */,
 				A10000000000000000000005 /* SecondaryViews.swift in Sources */,
+				A1000000000000000000000C /* FriendsManagementView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

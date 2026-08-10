@@ -135,6 +135,8 @@ struct MainTabView: View {
                 .tabItem { Label("Inbox", systemImage: "tray.full") }
             NavigationStack { CardsAccountsView() }
                 .tabItem { Label("Accounts", systemImage: "creditcard.and.123") }
+            NavigationStack { FriendsManagementView() }
+                .tabItem { Label("Friends", systemImage: "person.2.fill") }
             NavigationStack { OutboxView() }
                 .tabItem { Label("Outbox", systemImage: "paperplane") }
             NavigationStack { SettingsView() }
@@ -300,6 +302,7 @@ struct SplitEditorView: View {
     let transaction: TransactionRecord
     @Query private var rules: [SuggestionRule]
     @State private var friends: [SplitwiseFriend] = []
+    @State private var groups: [FriendGroup] = []
     @State private var selected = Set<Int>()
     @State private var exactAmounts = [Int: String]()
     @State private var exactMode = false
@@ -340,6 +343,17 @@ struct SplitEditorView: View {
             } header: { Text("Who shared it?") } footer: {
                 if exactMode && !amountIsValid { Text("Exact amounts must add up to the transaction total.").foregroundStyle(.red) }
             }
+            if !groups.isEmpty {
+                Section("Quick groups") {
+                    ForEach(groups) { group in
+                        Button {
+                            selected = Set(group.friendIDs.filter { id in friends.contains(where: { $0.id == id }) })
+                        } label: {
+                            HStack { Label(group.name, systemImage: "person.3.fill"); Spacer(); Text("\(group.friendIDs.count)").foregroundStyle(.secondary) }
+                        }
+                    }
+                }
+            }
             Section {
                 Button("Approve and add to outbox") { approve() }
                     .frame(maxWidth: .infinity).disabled(selected.isEmpty || !amountIsValid || transaction.state == .pending)
@@ -349,7 +363,12 @@ struct SplitEditorView: View {
         .task {
             applySuggestion()
             if session.isDemoMode { friends = DemoData.friends; return }
-            do { let live = try await session.api.friends(); if !live.isEmpty { friends = live } } catch { }
+            do {
+                async let liveFriends = session.api.friends()
+                async let liveGroups = session.api.friendGroups()
+                friends = try await liveFriends
+                groups = try await liveGroups
+            } catch { }
         }
     }
 
