@@ -17,6 +17,7 @@
 		A10000000000000000000008 /* LazySplit.app in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* LazySplit.app */; };
 		A10000000000000000000009 /* LinkKit in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000002 /* LinkKit */; };
 		A1000000000000000000000A /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000004 /* GoogleSignIn */; };
+		A1000000000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -55,6 +56,7 @@
 		A2000000000000000000000A /* LazySplit.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LazySplit.entitlements; sourceTree = "<group>"; };
 		A2000000000000000000000B /* LazySplitDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LazySplitDebug.entitlements; sourceTree = "<group>"; };
 		A2000000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000000D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -100,6 +102,7 @@
 				A2000000000000000000000A /* LazySplit.entitlements */,
 				A2000000000000000000000B /* LazySplitDebug.entitlements */,
 				A2000000000000000000000C /* Info.plist */,
+				A2000000000000000000000D /* Assets.xcassets */,
 			);
 			path = LazySplit;
 			sourceTree = "<group>";
@@ -218,6 +221,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1000000000000000000000B /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
