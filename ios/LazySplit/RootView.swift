@@ -126,26 +126,24 @@ struct MainTabView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Query private var transactions: [TransactionRecord]
-    @AppStorage("didSeedDemo") private var didSeedDemo = false
+    @Query private var drafts: [SplitDraft]
+    @Query private var exportAttempts: [ExportAttempt]
 
     var body: some View {
         TabView {
             NavigationStack { InboxView() }
                 .tabItem { Label("Inbox", systemImage: "tray.full") }
-            NavigationStack { CoverageView() }
-                .tabItem { Label("Coverage", systemImage: "calendar.badge.checkmark") }
+            NavigationStack { CardsAccountsView() }
+                .tabItem { Label("Accounts", systemImage: "creditcard.and.123") }
             NavigationStack { OutboxView() }
                 .tabItem { Label("Outbox", systemImage: "paperplane") }
             NavigationStack { SettingsView() }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .tint(.indigo)
-        .task {
-            if transactions.isEmpty && !didSeedDemo {
-                DemoData.transactions.forEach(modelContext.insert)
-                try? modelContext.save(); didSeedDemo = true
-            }
-            guard KeychainStore.read("sessionToken") != nil else { return }
+        .task(id: session.isDemoMode) {
+            prepareLocalDataForCurrentSession()
+            guard !session.isDemoMode, KeychainStore.read("sessionToken") != nil else { return }
             if let deviceToken = UserDefaults.standard.string(forKey: "apnsDeviceToken") { try? await session.api.registerDevice(token: deviceToken) }
             if let remote = try? await session.api.transactions() {
                 for item in remote {
@@ -168,10 +166,29 @@ struct MainTabView: View {
             Task { try? await session.api.registerDevice(token: token) }
         }
     }
+
+    private func prepareLocalDataForCurrentSession() {
+        if session.isDemoMode {
+            guard !transactions.contains(where: \.isDemo) else { return }
+            DemoData.transactions.forEach(modelContext.insert)
+            try? modelContext.save()
+            return
+        }
+
+        let demoIDs = Set(transactions.filter { $0.isDemo || DemoData.isLegacyDemo($0) }.map(\.id))
+        guard !demoIDs.isEmpty else { return }
+        drafts.filter { demoIDs.contains($0.transactionID) }.forEach { draft in
+            exportAttempts.filter { $0.draftID == draft.id }.forEach(modelContext.delete)
+            modelContext.delete(draft)
+        }
+        transactions.filter { demoIDs.contains($0.id) }.forEach(modelContext.delete)
+        try? modelContext.save()
+    }
 }
 
 struct InboxView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppSession.self) private var session
     @Query(sort: \TransactionRecord.date, order: .reverse) private var allTransactions: [TransactionRecord]
     @State private var stateFilter: ReviewState? = .needsReview
     @State private var search = ""
@@ -180,11 +197,15 @@ struct InboxView: View {
     @State private var undoAction: (UUID, ReviewState)?
 
     private var filtered: [TransactionRecord] {
-        allTransactions.filter { transaction in
+        visibleTransactions.filter { transaction in
             (stateFilter == nil || transaction.state == stateFilter) &&
             (accountFilter == nil || transaction.accountName == accountFilter) &&
             (search.isEmpty || transaction.merchant.localizedCaseInsensitiveContains(search))
         }
+    }
+
+    private var visibleTransactions: [TransactionRecord] {
+        allTransactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) }
     }
 
     var body: some View {
@@ -214,7 +235,7 @@ struct InboxView: View {
                     ForEach(ReviewState.allCases) { state in Button(state.title) { stateFilter = state } }
                     Divider()
                     Button("All cards") { accountFilter = nil }
-                    ForEach(Array(Set(allTransactions.map(\.accountName))).sorted(), id: \.self) { account in Button(account) { accountFilter = account } }
+                    ForEach(Array(Set(visibleTransactions.map(\.accountName))).sorted(), id: \.self) { account in Button(account) { accountFilter = account } }
                 } label: { Label("Filter", systemImage: "line.3.horizontal.decrease.circle") }
             }
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
@@ -278,7 +299,7 @@ struct SplitEditorView: View {
     @Environment(AppSession.self) private var session
     let transaction: TransactionRecord
     @Query private var rules: [SuggestionRule]
-    @State private var friends: [SplitwiseFriend] = DemoData.friends
+    @State private var friends: [SplitwiseFriend] = []
     @State private var selected = Set<Int>()
     @State private var exactAmounts = [Int: String]()
     @State private var exactMode = false
@@ -299,6 +320,10 @@ struct SplitEditorView: View {
                 Picker("Split", selection: $exactMode) {
                     Text("Equally").tag(false); Text("Exact amounts").tag(true)
                 }.pickerStyle(.segmented)
+                if friends.isEmpty {
+                    Label("Connect Splitwise from Cards & Accounts to load friends and groups.", systemImage: "person.2.slash")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
                 ForEach(friends) { friend in
                     HStack {
                         Button { toggle(friend.id) } label: {
@@ -323,6 +348,7 @@ struct SplitEditorView: View {
         .navigationTitle("Split expense").navigationBarTitleDisplayMode(.inline)
         .task {
             applySuggestion()
+            if session.isDemoMode { friends = DemoData.friends; return }
             do { let live = try await session.api.friends(); if !live.isEmpty { friends = live } } catch { }
         }
     }

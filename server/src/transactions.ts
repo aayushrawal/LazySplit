@@ -70,6 +70,33 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
        WHERE a.user_id=$1 GROUP BY a.id,a.name,a.mask,date_trunc('month',t.transaction_date) ORDER BY month`, [request.userID]);
     return { months: result.rows };
   });
+
+  app.get("/v1/connections", { preHandler: requireUser }, async (request) => {
+    const [providers, accounts] = await Promise.all([
+      pool.query<{ provider: "plaid" | "splitwise"; count: number }>(
+        `SELECT provider,count(*)::integer AS count FROM provider_connections
+         WHERE user_id=$1 AND status='active' GROUP BY provider`, [request.userID]),
+      pool.query(
+        `SELECT a.id,a.name,COALESCE(a.mask,'') AS mask,a.currency_code AS "currencyCode",
+         (pc.provider='plaid' AND pc.status='active') AS connected,
+         COALESCE(bool_or(t.source='plaid'),false) AS "hasPlaidHistory",
+         COALESCE(bool_or(t.source='csv'),false) AS "hasStatementHistory",
+         count(t.id)::integer AS "transactionCount",max(t.transaction_date)::date AS "lastTransactionDate"
+         FROM accounts a
+         LEFT JOIN provider_connections pc ON pc.id=a.connection_id
+         LEFT JOIN transactions t ON t.account_id=a.id
+         WHERE a.user_id=$1
+         GROUP BY a.id,a.name,a.mask,a.currency_code,pc.provider,pc.status
+         ORDER BY a.name,a.mask`, [request.userID])
+    ]);
+    const counts = new Map(providers.rows.map((row) => [row.provider, row.count]));
+    return {
+      plaidConnected: (counts.get("plaid") ?? 0) > 0,
+      plaidConnectionCount: counts.get("plaid") ?? 0,
+      splitwiseConnected: (counts.get("splitwise") ?? 0) > 0,
+      accounts: accounts.rows
+    };
+  });
 }
 
 export function canonicalFingerprint(account: string, date: string, amountMinor: number, merchant: string): string {

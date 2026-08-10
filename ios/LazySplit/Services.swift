@@ -75,6 +75,10 @@ actor APIClient {
         return response.friends
     }
 
+    func connections() async throws -> ConnectionOverview {
+        try await request("/v1/connections")
+    }
+
     func transactions() async throws -> [RemoteTransaction] {
         let response: TransactionsResponse = try await request("/v1/transactions?limit=500")
         return response.transactions
@@ -253,6 +257,23 @@ private struct AppleAuthBody: Encodable { let identityToken: String; let authori
 private struct LinkTokenResponse: Decodable { let linkToken: String }
 private struct EmptyResponse: Decodable {}
 private struct FriendsResponse: Decodable { let friends: [SplitwiseFriend] }
+struct ConnectionOverview: Decodable {
+    let plaidConnected: Bool
+    let plaidConnectionCount: Int
+    let splitwiseConnected: Bool
+    let accounts: [ConnectedAccountSummary]
+}
+struct ConnectedAccountSummary: Identifiable, Decodable {
+    let id: UUID
+    let name: String
+    let mask: String
+    let currencyCode: String
+    let connected: Bool
+    let hasPlaidHistory: Bool
+    let hasStatementHistory: Bool
+    let transactionCount: Int
+    let lastTransactionDate: Date?
+}
 struct PublishParticipant: Encodable, Sendable { let userID: Int; let owedMinor: Int; let paidMinor: Int }
 struct PublishBody: Encodable, Sendable { let draftID: UUID; let transactionID: UUID; let merchant: String; let date: Date; let amountMinor: Int; let currencyCode: String; let groupID: Int?; let participants: [PublishParticipant] }
 private struct PublishResponse: Decodable { let expenseID: Int }

@@ -37,6 +37,7 @@ final class TransactionRecord {
     var fingerprint: String
     var possibleDuplicateID: UUID?
     var updatedAt: Date
+    var isDemo: Bool = false
 
     var source: TransactionSource { TransactionSource(rawValue: sourceRaw) ?? .csv }
     var state: ReviewState {
@@ -45,7 +46,7 @@ final class TransactionRecord {
     }
     var amount: Decimal { Decimal(amountMinor) / 100 }
 
-    init(id: UUID = UUID(), externalID: String? = nil, source: TransactionSource, accountName: String, accountMask: String = "", merchant: String, originalDescription: String = "", date: Date, amountMinor: Int, currencyCode: String = "USD", state: ReviewState = .needsReview, category: String? = nil, fingerprint: String? = nil) {
+    init(id: UUID = UUID(), externalID: String? = nil, source: TransactionSource, accountName: String, accountMask: String = "", merchant: String, originalDescription: String = "", date: Date, amountMinor: Int, currencyCode: String = "USD", state: ReviewState = .needsReview, category: String? = nil, fingerprint: String? = nil, isDemo: Bool = false) {
         self.id = id
         self.externalID = externalID
         self.sourceRaw = source.rawValue
@@ -60,6 +61,7 @@ final class TransactionRecord {
         self.category = category
         self.fingerprint = fingerprint ?? TransactionFingerprint.make(account: accountName + accountMask, date: date, amountMinor: amountMinor, merchant: merchant)
         self.updatedAt = .now
+        self.isDemo = isDemo
     }
 }
 
