@@ -382,8 +382,8 @@ private struct PlaidConnectRow: View {
             let token = try await session.api.createPlaidLinkToken(); linkToken = token
             #if canImport(LinkKit)
             let configuration = LinkTokenConfiguration(token: token, onSuccess: { success in
-                showingLink = false
-                Task {
+                Task { @MainActor in
+                    showingLink = false
                     do {
                         try await session.api.exchangePlaid(publicToken: success.publicToken)
                         message = "Account connected. Historical sync has started."
@@ -392,8 +392,10 @@ private struct PlaidConnectRow: View {
                     catch { message = error.localizedDescription }
                 }
             }, onExit: { exit in
-                showingLink = false
-                if let error = exit.error { message = error.localizedDescription }
+                Task { @MainActor in
+                    showingLink = false
+                    if let error = exit.error { message = error.localizedDescription }
+                }
             }, onEvent: nil, onLoad: nil)
             linkSession = try Plaid.createPlaidLinkSession(configuration: configuration); showingLink = true
             #else

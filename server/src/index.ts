@@ -32,6 +32,15 @@ app.get("/.well-known/apple-app-site-association", async (_request, reply) => {
     }
   };
 });
+app.get("/plaid/callback", async (_request, reply) => {
+  return reply.type("text/html; charset=utf-8").send(`<!doctype html>
+<html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Return to LazySplit</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:48px 24px;text-align:center;background:#f2f2f7;color:#1c1c1e">
+<main style="max-width:420px;margin:auto;background:white;padding:32px 24px;border-radius:20px">
+<h1 style="font-size:24px">Return to LazySplit</h1>
+<p style="color:#636366;line-height:1.45">Your bank authorization is complete. Return to the LazySplit app to finish connecting this account.</p>
+</main></body></html>`);
+});
 await app.register(authRoutes); await app.register(plaidRoutes); await app.register(splitwiseRoutes); await app.register(transactionRoutes); await app.register(deviceRoutes);
 app.post("/internal/digests/run", async (request, reply) => {
   if (request.headers.authorization !== `Bearer ${config.SESSION_SECRET}`) return reply.code(401).send({ message: "Unauthorized" });
