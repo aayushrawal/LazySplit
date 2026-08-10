@@ -12,7 +12,10 @@ import { plaidRoutes } from "./plaid.js";
 import { splitwiseRoutes } from "./splitwise.js";
 import { transactionRoutes } from "./transactions.js";
 
-const app = Fastify({ logger: { redact: ["req.headers.authorization", "req.body.identityToken", "req.body.publicToken", "access_token", "encrypted_token"] } });
+const app = Fastify({ logger: { redact: [
+  "req.headers.authorization", "req.body.identityToken", "req.body.publicToken", "req.body.public_token",
+  "req.body.public_tokens", "req.body.link_token", "access_token", "encrypted_token", "encrypted_link_token"
+] } });
 app.removeContentTypeParser("application/json");
 app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
   request.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);

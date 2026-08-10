@@ -66,6 +66,17 @@ actor APIClient {
         return response.linkToken
     }
 
+    func createPlaidHostedLink() async throws -> HostedPlaidLink {
+        let response: HostedPlaidLinkResponse = try await request("/v1/plaid/hosted-link", method: "POST")
+        guard let url = URL(string: response.hostedLinkURL) else { throw APIError.invalidResponse }
+        return HostedPlaidLink(sessionID: response.sessionID, url: url)
+    }
+
+    func completePlaidHostedLink(sessionID: UUID) async throws -> HostedPlaidStatus {
+        let response: HostedPlaidStatusResponse = try await request("/v1/plaid/hosted-link/\(sessionID.uuidString)/complete", method: "POST")
+        return HostedPlaidStatus(state: response.status, connectedCount: response.connectedCount, message: response.message)
+    }
+
     func exchangePlaid(publicToken: String) async throws {
         let _: EmptyResponse = try await request("/v1/plaid/exchange", method: "POST", body: ["publicToken": publicToken])
     }
@@ -281,6 +292,8 @@ private struct ServerError: Decodable { let message: String }
 private struct SessionResponse: Decodable { let token: String }
 private struct AppleAuthBody: Encodable { let identityToken: String; let authorizationCode: String? }
 private struct LinkTokenResponse: Decodable { let linkToken: String }
+private struct HostedPlaidLinkResponse: Decodable { let sessionID: UUID; let hostedLinkURL: String }
+private struct HostedPlaidStatusResponse: Decodable { let status: String; let connectedCount: Int; let message: String? }
 private struct EmptyResponse: Decodable {}
 private struct FriendsResponse: Decodable { let friends: [SplitwiseFriend] }
 private struct FriendAliasBody: Encodable { let alias: String? }
@@ -288,6 +301,8 @@ private struct FriendOrderBody: Encodable { let friendIDs: [Int] }
 private struct FriendGroupBody: Encodable { let name: String; let friendIDs: [Int] }
 private struct FriendGroupsResponse: Decodable { let groups: [FriendGroup] }
 private struct FriendGroupResponse: Decodable { let group: FriendGroup }
+struct HostedPlaidLink: Sendable { let sessionID: UUID; let url: URL }
+struct HostedPlaidStatus: Sendable { let state: String; let connectedCount: Int; let message: String? }
 struct ConnectionOverview: Decodable {
     let plaidConnected: Bool
     let plaidConnectionCount: Int

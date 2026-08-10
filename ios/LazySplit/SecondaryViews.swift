@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
@@ -363,6 +364,8 @@ private struct PlaidConnectRow: View {
     var onConnected: @MainActor () -> Void = {}
     @State private var linkToken: String?
     @State private var loading = false
+    @State private var hostedAuthSession: ASWebAuthenticationSession?
+    @State private var hostedPresentationContext = PlaidHostedLinkPresentationContext()
     #if canImport(LinkKit)
     @State private var linkSession: PlaidLinkSession?
     @State private var showingLink = false
@@ -379,6 +382,10 @@ private struct PlaidConnectRow: View {
     @MainActor private func connect() async {
         loading = true; defer { loading = false }
         do {
+            #if DEBUG
+            let hostedLink = try await session.api.createPlaidHostedLink()
+            startHostedLink(hostedLink)
+            #else
             let token = try await session.api.createPlaidLinkToken(); linkToken = token
             #if canImport(LinkKit)
             let configuration = LinkTokenConfiguration(token: token, onSuccess: { success in
@@ -401,7 +408,65 @@ private struct PlaidConnectRow: View {
             #else
             message = "Plaid LinkKit is unavailable in this build."
             #endif
+            #endif
         } catch { message = error.localizedDescription }
+    }
+
+    @MainActor private func startHostedLink(_ hostedLink: HostedPlaidLink) {
+        let authSession = ASWebAuthenticationSession(url: hostedLink.url, callbackURLScheme: "lazysplit") { callbackURL, error in
+            Task { @MainActor in
+                hostedAuthSession = nil
+                if let authError = error as? ASWebAuthenticationSessionError, authError.code == .canceledLogin {
+                    message = "Plaid connection canceled."
+                    return
+                }
+                guard error == nil, callbackURL?.scheme == "lazysplit" else {
+                    message = error?.localizedDescription ?? "Plaid did not return a valid completion response."
+                    return
+                }
+                await finishHostedLink(sessionID: hostedLink.sessionID)
+            }
+        }
+        authSession.presentationContextProvider = hostedPresentationContext
+        hostedAuthSession = authSession
+        if !authSession.start() {
+            hostedAuthSession = nil
+            message = "Could not open Plaid's secure connection page."
+        }
+    }
+
+    @MainActor private func finishHostedLink(sessionID: UUID) async {
+        loading = true; defer { loading = false }
+        do {
+            for _ in 0..<20 {
+                let status = try await session.api.completePlaidHostedLink(sessionID: sessionID)
+                switch status.state {
+                case "connected":
+                    message = status.connectedCount == 1 ? "Bank connection completed. Historical sync has started." : "\(status.connectedCount) bank connections completed. Historical sync has started."
+                    onConnected()
+                    return
+                case "exited":
+                    message = status.message ?? "Plaid connection was not completed."
+                    return
+                case "failed":
+                    message = status.message ?? "Plaid could not finish this connection."
+                    return
+                default:
+                    try await Task.sleep(for: .seconds(1))
+                }
+            }
+            message = "Plaid is still finishing the connection. Refresh Cards & Accounts in a moment."
+        } catch { message = error.localizedDescription }
+    }
+}
+
+@MainActor
+private final class PlaidHostedLinkPresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
     }
 }
 

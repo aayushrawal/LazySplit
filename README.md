@@ -26,6 +26,8 @@ Release uses `LazySplit.entitlements`. Register `com.aayushrawal.LazySplit` in a
 
 Debug builds can use a real backend session without Sign in with Apple. Run `pnpm development-code:set` in `server/`, then `docker compose up -d --force-recreate api worker`; the generated development access code is copied to the Mac clipboard. Paste it into the app's **Development access code** field and tap **Connect to LazySplit**. The endpoint exists only while `NODE_ENV=development` and a code is configured. Use `pnpm secrets:rotate` only for an intentional full rotation because it invalidates sessions and previously encrypted provider tokens.
 
+To work with free Apple provisioning, Debug opens Plaid Hosted Link in `ASWebAuthenticationSession` and completes through `lazysplit://plaid-hosted-complete`; the public token is retrieved and exchanged only by the backend. Release continues to use native LinkKit and the `applinks:lazysplit.aayushrawal.com` Universal Link. Banks that force a true bank-app-to-app handoff may still require the paid-team Associated Domains entitlement, but browser-based OAuth and standard Hosted Link flows work without it.
+
 Without a configured API, the app can still launch in a clearly labelled demo mode; live connection controls are disabled there. Live Plaid linking uses a backend-generated Link token and Plaid LinkKit 7. Real financial institutions require `PLAID_ENV=production`, an approved Plaid Production/Trial account, and its Production secret.
 
 ## Run the API
@@ -46,7 +48,7 @@ If Cloudflare was initially configured with a standalone connector, run `pnpm tu
 
 Copy `server/.env.example` to `server/.env` and fill in:
 
-- **Plaid:** Client ID, environment-specific secret, and environment. In the Plaid dashboard register `https://lazysplit.aayushrawal.com/plaid/callback` as the redirect URI and `https://lazysplit.aayushrawal.com/v1/plaid/webhook` as the Transactions webhook. Subscribe to Transactions webhooks; the endpoint verifies Plaid's signed JWT before processing updates.
+- **Plaid:** Client ID, environment-specific secret, and environment. In the Plaid dashboard register `https://lazysplit.aayushrawal.com/plaid/callback` as the redirect URI and `https://lazysplit.aayushrawal.com/v1/plaid/webhook` as the webhook. The endpoint verifies Plaid's signed JWT before processing Transactions updates and Hosted Link completion events.
 - **Google:** Create one iOS OAuth client for `com.aayushrawal.LazySplit` and one Web OAuth client in the same Google Auth Platform project. Set the Web client ID as `GOOGLE_CLIENT_ID` on the server, and set the iOS client ID, Web client ID, and reversed iOS client ID in the app build settings described by `Configuration.example.xcconfig`.
 - **Splitwise:** OAuth consumer key and secret, with the exact callback `https://lazysplit.aayushrawal.com/v1/splitwise/callback`.
 - **Apple:** Services/App identifier and Team ID. Production Sign in with Apple, Associated Domains, and APNs require an active Apple Developer Program membership.

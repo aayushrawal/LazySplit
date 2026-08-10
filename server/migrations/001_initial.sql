@@ -33,6 +33,21 @@ CREATE TABLE IF NOT EXISTS provider_connections (
   UNIQUE(user_id, provider, provider_item_id)
 );
 
+CREATE TABLE IF NOT EXISTS plaid_link_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  link_token_hash text UNIQUE NOT NULL,
+  encrypted_link_token text NOT NULL,
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processing', 'connected', 'exited', 'failed')),
+  connected_count integer NOT NULL DEFAULT 0,
+  error_message text,
+  expires_at timestamptz NOT NULL DEFAULT now() + interval '30 minutes',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS plaid_link_sessions_user_created_idx ON plaid_link_sessions(user_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS accounts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
