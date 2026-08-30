@@ -236,19 +236,8 @@ struct InboxView: View {
                         }
                     } label: { Label("View", systemImage: "slider.horizontal.3").font(.subheadline.weight(.semibold)) }
                 }
-                .listRowInsets(EdgeInsets(top: 14, leading: 0, bottom: 0, trailing: 0))
+                .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 0, trailing: 0))
                 .listRowBackground(Color.clear)
-                if colorCodeByAccount && !accountLegend.isEmpty {
-                    DisclosureGroup("Card / account colors") {
-                        ForEach(accountLegend, id: \.accountColorKey) { transaction in
-                            HStack {
-                                Circle().fill(AccountColors.color(for: transaction.accountColorKey, in: colors))
-                                    .frame(width: 10, height: 10).accessibilityHidden(true)
-                                Text(transaction.cardLabel).font(.caption)
-                            }
-                        }
-                    }
-                }
                 if session.isRefreshingTransactions { ProgressView("Updating charges…") }
                 if let error = filters.validationError { Text(error).foregroundStyle(.red) }
                 if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
@@ -269,6 +258,7 @@ struct InboxView: View {
                             }
                         }
                     }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowSeparator(.hidden)
                     if !collapsedMonths.contains(month.id) {
                         ForEach(month.transactions) { transaction in
@@ -279,10 +269,14 @@ struct InboxView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .listSectionSpacing(18)
+        .listSectionSpacing(14)
         .scrollContentBackground(.hidden)
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Inbox")
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            InboxAccountLegend(accounts: accountLegend, colors: colors)
+        }
         .refreshable { await session.refreshTransactions(in: modelContext) }
         .task { await session.refreshTransactions(in: modelContext) }
         .onChange(of: accountKeys, initial: true) { _, _ in
@@ -315,7 +309,7 @@ struct InboxView: View {
         NavigationLink { SplitEditorView(transaction: transaction) } label: {
             TransactionRow(transaction: transaction, accountColor: colorCodeByAccount ? AccountColors.color(for: transaction.accountColorKey, in: colors) : nil)
         }
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 14))
+        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 14))
         .listRowBackground(Color(.secondarySystemGroupedBackground))
         .tag(transaction.id)
         .swipeActions(edge: .leading, allowsFullSwipe: true) {

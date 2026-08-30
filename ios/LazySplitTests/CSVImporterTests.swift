@@ -5,6 +5,21 @@ import SwiftData
 
 final class CSVImporterTests: XCTestCase {
     @MainActor
+    func testCompactInboxDimensionsAtStandardTextSize() {
+        let transaction = record()
+        let summary = UIHostingController(rootView: InboxSummaryCard(transactions: [transaction], filtering: false)
+            .environment(\.dynamicTypeSize, .large))
+        let summarySize = summary.sizeThatFits(in: CGSize(width: 361, height: 1000))
+        // Previous summary measured about 142pt at this width; require at least a 50% reduction.
+        XCTAssertLessThanOrEqual(summarySize.height, 71)
+        let row = UIHostingController(rootView: TransactionRow(transaction: transaction)
+            .environment(\.dynamicTypeSize, .large))
+        let rowSize = row.sizeThatFits(in: CGSize(width: 313, height: 1000))
+        // Including the new 4pt List insets, keep ordinary rows about 20% below the previous ~92pt.
+        XCTAssertLessThanOrEqual(rowSize.height + 4, 75)
+    }
+
+    @MainActor
     func testInboxRenderingAcrossAppearanceAndTextSizes() async throws {
         let container = try ModelContainer(for: TransactionRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let session = AppSession()

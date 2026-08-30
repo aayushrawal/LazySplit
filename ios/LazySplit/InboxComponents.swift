@@ -46,9 +46,9 @@ struct InboxMonthHeader: View {
 
     var body: some View {
         Button(action: toggle) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(month.title).font(.title3.weight(.bold)).foregroundStyle(.primary)
+                    Text(month.title).font(.headline.weight(.bold)).foregroundStyle(.primary)
                     Spacer(minLength: 8)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.bold)).foregroundStyle(.secondary)
@@ -66,7 +66,8 @@ struct InboxMonthHeader: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 4)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -85,35 +86,81 @@ struct InboxMonthHeader: View {
 }
 
 struct InboxSummaryCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let transactions: [TransactionRecord]
     let filtering: Bool
     private var reviewCount: Int { transactions.filter { $0.state == .needsReview }.count }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label(filtering ? "FILTERED INBOX" : "YOUR SPLIT INBOX", systemImage: "tray")
-                    .font(.caption2.weight(.semibold)).tracking(1)
-                Spacer()
-                Image(systemName: "person.2.fill").accessibilityHidden(true)
-            }.foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(reviewCount.formatted()).font(.system(.largeTitle, design: .rounded, weight: .bold))
-                Text("to review").font(.headline).foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                context
+                Spacer(minLength: 8)
+                reviewCountLabel
             }
-            Text("\(transactions.count) charges · Credits & refunds excluded")
-                .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                context
+                reviewCountLabel
+            }
         }
-        .padding(20)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color(.secondarySystemGroupedBackground))
-                .overlay(alignment: .topTrailing) {
-                    RoundedRectangle(cornerRadius: 24).fill(.indigo.opacity(0.06))
-                        .frame(width: 100).allowsHitTesting(false)
-                }
+        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Credits and refunds are excluded from Inbox.")
+    }
+
+    private var context: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(filtering ? "FILTERED INBOX" : "YOUR SPLIT INBOX")
+                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Text("\(transactions.count) charges").font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    private var reviewCountLabel: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(reviewCount.formatted()).font(.system(.title2, design: .rounded, weight: .bold))
+            Text("to review").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
+    }
+}
+
+struct InboxAccountLegend: View {
+    let accounts: [TransactionRecord]
+    let colors: [String: Int]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("CARDS & ACCOUNTS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
+            if accounts.isEmpty {
+                Text("Connected accounts will appear here.").font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(accounts, id: \.accountColorKey) { account in
+                            HStack(spacing: 6) {
+                                Circle().fill(AccountColors.color(for: account.accountColorKey, in: colors))
+                                    .frame(width: 8, height: 8).accessibilityHidden(true)
+                                Text(account.cardLabel).font(.caption.weight(.medium))
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(Color(.secondarySystemGroupedBackground), in: .capsule)
+                        }
+                    }.padding(.horizontal, 20)
+                }
+                .accessibilityLabel("Card and account color legend")
+                .accessibilityHint("Scroll horizontally to see additional accounts.")
+            }
+        }
+        .padding(.top, 4).padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
     }
 }
 
@@ -123,14 +170,14 @@ struct TransactionRow: View {
     var accountColor: Color? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 19, weight: .medium))
-                .frame(width: 42, height: 46)
-                .background((accountColor ?? .indigo).opacity(0.10), in: .rect(cornerRadius: 13))
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 36, height: 38)
+                .background((accountColor ?? .indigo).opacity(0.10), in: .rect(cornerRadius: 11))
                 .foregroundStyle(accountColor ?? .indigo)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 if dynamicTypeSize.isAccessibilitySize {
                     merchant
                     amount
@@ -153,7 +200,7 @@ struct TransactionRow: View {
                 if dynamicTypeSize.isAccessibilitySize { status }
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 5)
         .accessibilityElement(children: .combine)
     }
 
