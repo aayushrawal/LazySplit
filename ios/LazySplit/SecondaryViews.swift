@@ -7,6 +7,7 @@ import LinkKit
 #endif
 
 struct CardsAccountsView: View {
+    @SwiftUI.Environment(\.modelContext) private var modelContext
     @SwiftUI.Environment(AppSession.self) private var session
     @SwiftUI.Environment(\.openURL) private var openURL
     @SwiftUI.Environment(\.scenePhase) private var scenePhase
@@ -15,6 +16,8 @@ struct CardsAccountsView: View {
     @State private var overview: ConnectionOverview?
     @State private var message: String?
     @State private var isRefreshing = false
+    @State private var renamingAccount: ConnectedAccountSummary?
+    @State private var accountNickname = ""
 
     private var visibleTransactions: [TransactionRecord] {
         transactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) }
@@ -57,7 +60,18 @@ struct CardsAccountsView: View {
                 if accounts.isEmpty {
                     ContentUnavailableView("No accounts yet", systemImage: "creditcard", description: Text("Connect through Plaid to bring in current cards and bank accounts."))
                 } else {
-                    ForEach(accounts) { account in AccountHistoryCard(account: account) }
+                    ForEach(accounts) { account in
+                        VStack(alignment: .leading) {
+                            AccountHistoryCard(account: account)
+                            if let remote = overview?.accounts.first(where: { $0.name == account.name && $0.mask == account.mask }) {
+                                Button {
+                                    accountNickname = remote.name
+                                    renamingAccount = remote
+                                } label: { Label("Rename card", systemImage: "pencil") }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -86,11 +100,30 @@ struct CardsAccountsView: View {
                 Section { Text("Live account connections are disabled in demo mode.").font(.caption).foregroundStyle(.secondary) }
             }
             if let message { Section { Text(message).foregroundStyle(.secondary) } }
+            if session.isRefreshingTransactions { ProgressView("Loading transactions…") }
+            if let error = session.transactionRefreshError { Text(error).foregroundStyle(.red) }
         }
         .navigationTitle("Cards & Accounts")
         .refreshable { await refreshConnections() }
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { Task { await refreshConnections() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(isRefreshing || session.isDemoMode) } }
         .sheet(isPresented: $showingImporter) { NavigationStack { CSVImportView() } }
+        .alert("Rename card", isPresented: Binding(get: { renamingAccount != nil }, set: { if !$0 { renamingAccount = nil } })) {
+            TextField("Card product or nickname", text: $accountNickname)
+            Button("Save") {
+                if let account = renamingAccount {
+                    let nickname = accountNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task {
+                        do {
+                            try await session.api.renameAccount(id: account.id, nickname: nickname)
+                            await refreshConnections()
+                        } catch { message = error.localizedDescription }
+                    }
+                }
+            }.disabled(accountNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || accountNickname.count > 80)
+            Button("Cancel", role: .cancel) { renamingAccount = nil }
+        } message: {
+            Text("Your bank supplied “\(renamingAccount?.providerName ?? renamingAccount?.name ?? "Account")”. Set the product name you prefer; this only changes LazySplit.")
+        }
         .task { await refreshConnections() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await refreshConnections() } } }
     }
@@ -100,6 +133,7 @@ struct CardsAccountsView: View {
         isRefreshing = true; defer { isRefreshing = false }
         do { overview = try await session.api.connections() }
         catch { message = error.localizedDescription }
+        await session.refreshTransactions(in: modelContext)
     }
 }
 

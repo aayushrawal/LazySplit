@@ -2,6 +2,14 @@ import XCTest
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testAPIDatesAcceptPostgresAndISOFormats() throws {
+        struct Payload: Decodable { let date: Date }
+        for value in ["2026-08-30", "2026-08-30T00:00:00Z", "2026-08-30T00:00:00.000Z"] {
+            let decoded = try JSONDecoder.api.decode(Payload.self, from: Data("{\"date\":\"\(value)\"}".utf8))
+            XCTAssertEqual(decoded.date.timeIntervalSince1970, 1788048000)
+        }
+    }
+
     func testQuotedMerchantAndDuplicateDetection() throws {
         let csv = "Transaction Date,Description,Amount,Card\n08/01/2026,\"Cafe, North\",24.50,4242\n08/01/2026,\"Cafe, North\",24.50,4242\n"
         let data = Data(csv.utf8)

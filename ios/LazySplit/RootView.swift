@@ -123,6 +123,7 @@ struct OnboardingView: View {
 }
 
 struct MainTabView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Query private var transactions: [TransactionRecord]
@@ -147,21 +148,10 @@ struct MainTabView: View {
             prepareLocalDataForCurrentSession()
             guard !session.isDemoMode, KeychainStore.read("sessionToken") != nil else { return }
             if let deviceToken = UserDefaults.standard.string(forKey: "apnsDeviceToken") { try? await session.api.registerDevice(token: deviceToken) }
-            if let remote = try? await session.api.transactions() {
-                for item in remote {
-                    if let current = transactions.first(where: { $0.id == item.id || $0.externalID == item.externalID || $0.fingerprint == item.fingerprint }) {
-                        current.externalID = item.externalID; current.sourceRaw = item.source.rawValue; current.accountName = item.accountName
-                        current.accountMask = item.accountMask; current.merchant = item.merchant; current.originalDescription = item.originalDescription
-                        current.date = item.date; current.amountMinor = item.amountMinor; current.currencyCode = item.currencyCode
-                        current.state = item.state; current.category = item.category; current.fingerprint = item.fingerprint
-                        current.possibleDuplicateID = item.possibleDuplicateID
-                    } else {
-                        let record = TransactionRecord(id: item.id, externalID: item.externalID, source: item.source, accountName: item.accountName, accountMask: item.accountMask, merchant: item.merchant, originalDescription: item.originalDescription, date: item.date, amountMinor: item.amountMinor, currencyCode: item.currencyCode, state: item.state, category: item.category, fingerprint: item.fingerprint)
-                        record.possibleDuplicateID = item.possibleDuplicateID; modelContext.insert(record)
-                    }
-                }
-                try? modelContext.save()
-            }
+            await session.refreshTransactions(in: modelContext)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await session.refreshTransactions(in: modelContext) } }
         }
         .onReceive(NotificationCenter.default.publisher(for: .didReceiveAPNSToken)) { notification in
             guard let token = notification.object as? String, KeychainStore.read("sessionToken") != nil else { return }
@@ -212,6 +202,10 @@ struct InboxView: View {
 
     var body: some View {
         List(selection: $selected) {
+            if session.isRefreshingTransactions { ProgressView("Loading transactions…") }
+            if let error = session.transactionRefreshError {
+                Text(error).foregroundStyle(.red)
+            }
             if filtered.isEmpty {
                 ContentUnavailableView("You’re caught up", systemImage: "checkmark.circle", description: Text("Choose another filter or wait for the next card sync."))
                     .listRowBackground(Color.clear)
@@ -229,6 +223,8 @@ struct InboxView: View {
         }
         .listStyle(.plain)
         .navigationTitle("Review")
+        .refreshable { await session.refreshTransactions(in: modelContext) }
+        .task { await session.refreshTransactions(in: modelContext) }
         .searchable(text: $search, prompt: "Merchant")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {

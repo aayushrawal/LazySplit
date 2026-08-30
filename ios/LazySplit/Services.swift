@@ -29,7 +29,8 @@ actor APIClient {
     }
 
     func request<T: Decodable>(_ path: String, method: String = "GET", body: Encodable? = nil, idempotencyKey: String? = nil) async throws -> T {
-        var request = URLRequest(url: baseURL.appending(path: path))
+        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else { throw APIError.invalidResponse }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         if let token = KeychainStore.read("sessionToken") { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let idempotencyKey { request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key") }
@@ -117,8 +118,21 @@ actor APIClient {
     }
 
     func transactions() async throws -> [RemoteTransaction] {
-        let response: TransactionsResponse = try await request("/v1/transactions?limit=500")
-        return response.transactions
+        var records = [RemoteTransaction]()
+        var cursor: UUID?
+        var seen = Set<UUID>()
+        repeat {
+            let path = "/v1/transactions?limit=500" + (cursor.map { "&cursor=\($0.uuidString)" } ?? "")
+            let response: TransactionsResponse = try await request(path)
+            records.append(contentsOf: response.transactions)
+            cursor = response.nextCursor
+            if let cursor, !seen.insert(cursor).inserted { throw APIError.invalidResponse }
+        } while cursor != nil
+        return records
+    }
+
+    func renameAccount(id: UUID, nickname: String) async throws {
+        let _: EmptyResponse = try await request("/v1/accounts/\(id.uuidString)", method: "PATCH", body: ["nickname": nickname])
     }
 
     func importTransactions(_ values: [ImportedTransaction], idempotencyKey: String) async throws -> ImportResponse {
@@ -312,6 +326,7 @@ struct ConnectionOverview: Decodable {
 struct ConnectedAccountSummary: Identifiable, Decodable {
     let id: UUID
     let name: String
+    let providerName: String?
     let mask: String
     let currencyCode: String
     let connected: Bool
@@ -328,7 +343,7 @@ struct RemoteTransaction: Decodable {
     let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String
     let state: ReviewState; let category: String?; let fingerprint: String; let possibleDuplicateID: UUID?
 }
-private struct TransactionsResponse: Decodable { let transactions: [RemoteTransaction] }
+private struct TransactionsResponse: Decodable { let transactions: [RemoteTransaction]; let nextCursor: UUID? }
 struct ImportedTransaction: Encodable, Sendable { let id: UUID; let accountName: String; let accountMask: String; let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String; let fingerprint: String }
 private struct ImportBody: Encodable, Sendable { let idempotencyKey: String; let transactions: [ImportedTransaction] }
 struct ImportResponse: Decodable { let inserted: Int; let duplicates: Int }
@@ -339,5 +354,20 @@ extension JSONEncoder {
     static var api: JSONEncoder { let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; return encoder }
 }
 extension JSONDecoder {
-    static var api: JSONDecoder { let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601; return decoder }
+    static var api: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: value) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) { return date }
+            formatter.formatOptions = [.withFullDate]
+            if let date = formatter.date(from: value) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid API date")
+        }
+        return decoder
+    }
 }

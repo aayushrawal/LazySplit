@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   UNIQUE(user_id, external_id)
 );
 
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS nickname text;
+
 CREATE TABLE IF NOT EXISTS transactions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -12,20 +12,32 @@ const importedTransaction = z.object({
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   app.get("/v1/transactions", { preHandler: requireUser }, async (request) => {
-    const query = z.object({ state: z.string().optional(), account: z.string().uuid().optional(), before: z.string().optional(), limit: z.coerce.number().int().min(1).max(500).default(200) }).parse(request.query);
+    const query = z.object({ state: z.string().optional(), account: z.string().uuid().optional(), before: z.string().optional(), cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(500).default(200) }).parse(request.query);
     const values: unknown[] = [request.userID]; let where = "t.user_id=$1";
     if (query.state) { values.push(query.state); where += ` AND t.review_state=$${values.length}`; }
     if (query.account) { values.push(query.account); where += ` AND t.account_id=$${values.length}`; }
     if (query.before) { values.push(query.before); where += ` AND t.transaction_date<$${values.length}`; }
+    if (query.cursor) {
+      values.push(query.cursor);
+      where += ` AND (t.transaction_date,t.id) < (SELECT transaction_date,id FROM transactions WHERE id=$${values.length} AND user_id=$1)`;
+    }
     values.push(query.limit);
     const result = await pool.query(
-      `SELECT t.id,t.external_id AS "externalID",t.source,a.name AS "accountName",COALESCE(a.mask,'') AS "accountMask",
+      `SELECT t.id,t.external_id AS "externalID",t.source,COALESCE(a.nickname,a.name,'Account') AS "accountName",COALESCE(a.mask,'') AS "accountMask",
        t.merchant,COALESCE(t.original_description,'') AS "originalDescription",t.transaction_date AS date,
        t.amount_minor::integer AS "amountMinor",t.currency_code AS "currencyCode",t.review_state AS state,
        t.raw_category AS category,t.fingerprint,t.possible_duplicate_id AS "possibleDuplicateID"
        FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE ${where}
-       ORDER BY t.transaction_date DESC LIMIT $${values.length}`, values);
-    return { transactions: result.rows };
+       ORDER BY t.transaction_date DESC,t.id DESC LIMIT $${values.length}`, values);
+    return { transactions: result.rows, nextCursor: result.rows.length === query.limit ? result.rows.at(-1)!.id : null };
+  });
+
+  app.patch("/v1/accounts/:id", { preHandler: requireUser }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const { nickname } = z.object({ nickname: z.string().trim().min(1).max(80).nullable() }).parse(request.body);
+    const result = await pool.query("UPDATE accounts SET nickname=$1 WHERE id=$2 AND user_id=$3 RETURNING id", [nickname, id, request.userID]);
+    if (!result.rowCount) return reply.code(404).send({ message: "Account not found." });
+    return {};
   });
 
   app.post("/v1/transactions/import", { preHandler: requireUser }, async (request) => {
@@ -77,7 +89,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
         `SELECT provider,count(*)::integer AS count FROM provider_connections
          WHERE user_id=$1 AND status='active' GROUP BY provider`, [request.userID]),
       pool.query(
-        `SELECT a.id,a.name,COALESCE(a.mask,'') AS mask,a.currency_code AS "currencyCode",
+        `SELECT a.id,COALESCE(a.nickname,a.name) AS name,a.name AS "providerName",COALESCE(a.mask,'') AS mask,a.currency_code AS "currencyCode",
          (pc.provider='plaid' AND pc.status='active') AS connected,
          COALESCE(bool_or(t.source='plaid'),false) AS "hasPlaidHistory",
          COALESCE(bool_or(t.source='csv'),false) AS "hasStatementHistory",

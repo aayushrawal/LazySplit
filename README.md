@@ -32,6 +32,8 @@ Without a configured API, the app can still launch in a clearly labelled demo mo
 
 ## Run the API
 
+The app refreshes its transaction cache after connecting a card, when returning to the foreground, and when pulling to refresh Inbox or Accounts. It follows all transaction pages, including histories larger than 500 entries, and preserves local review decisions during refresh. Accounts → **Rename card** sets a private LazySplit nickname when the bank supplies a generic/rewards-program name instead of the card product.
+
 ```sh
 cd server
 cp .env.example .env
