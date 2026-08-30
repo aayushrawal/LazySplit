@@ -4,6 +4,17 @@ import SwiftData
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    @MainActor func testDemoFriendsStartEmptyAndResetWhenLeavingDemo() {
+        let session = AppSession()
+        XCTAssertTrue(session.demoFriends.isEmpty)
+        session.isDemoMode = true
+        session.demoFriends = DemoData.friends
+        XCTAssertFalse(session.demoFriends.isEmpty)
+        session.completeAuthentication()
+        XCTAssertTrue(session.demoFriends.isEmpty)
+        XCTAssertFalse(session.isDemoMode)
+    }
+
     func testHistoryGroupingByMonthYearAndAccountKeepsNewSeparate() {
         let august = record(amount: 1000), july = record(amount: 2000), priorYear = record(amount: 3000)
         august.date = InboxMonth.calendar.date(from: DateComponents(year: 2026, month: 8, day: 1))!

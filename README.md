@@ -32,6 +32,12 @@ Without a configured API, the app can still launch in a clearly labelled demo mo
 
 ## Run the API
 
+### Choose your friends
+
+The Friends tab starts empty, even after connecting Splitwise. Use **Add friends from Splitwise** to search and select people, then tap **Add**. Only explicitly added friends appear in LazySplit and the split editor; refreshing never adds anyone automatically. Swipe a friend to remove them from your LazySplit list without deleting their Splitwise friendship, nickname, existing groups, or past expenses. Groups with members outside your list cannot be used for a new split until those members are added again. The selection is saved per signed-in user on the backend; demo selections are separate and reset when leaving demo mode.
+
+The migration adds `friend_preferences.selected` with a default of `false`, so existing aliases or custom order do not opt anyone in. Deploy the API/migration before installing the updated app. `GET /v1/friends` returns selected friends, `GET /v1/friends?available=true` provides the picker directory (`refresh=true` refreshes Splitwise), `POST /v1/friends` adds selected `friendIDs`, and `DELETE /v1/friends/:id` removes a selection.
+
 ### Inbox review and filters
 
 **New** appears below the filter controls and above the grouped history. It contains newly received posted charges that still need review, including historical purchases imported now. **Mark seen** moves the matching new charges into history without changing review status or approving a split. Reviewing a new charge also moves it into history; rows are never duplicated between sections. Arrival/seen tracking is saved on this device, existing caches remain in history after upgrading, and refreshes do not mark previously seen records new again. Pending transactions enter New once posted. Search and filters apply to both sections; New is ordered by arrival batch, then purchase date.

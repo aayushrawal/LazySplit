@@ -103,7 +103,7 @@ async function sw<T>(token: string, path: string, init?: RequestInit): Promise<T
   throw new Error("Splitwise rate limit retry exhausted");
 }
 
-async function refreshCache(userID: string): Promise<void> {
+export async function refreshCache(userID: string): Promise<void> {
   const token = await tokenFor(userID);
   const [me, friends, groups, categories] = await Promise.all([
     sw<{ user: unknown }>(token, "/get_current_user"), sw<{ friends: unknown[] }>(token, "/get_friends"),

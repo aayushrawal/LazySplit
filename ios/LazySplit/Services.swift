@@ -87,6 +87,19 @@ actor APIClient {
         return response.friends
     }
 
+    func availableFriends(refresh: Bool = false) async throws -> [SplitwiseFriend] {
+        let response: FriendsResponse = try await request("/v1/friends?available=true&refresh=\(refresh)")
+        return response.friends
+    }
+
+    func addFriends(ids: [Int]) async throws {
+        let _: EmptyResponse = try await request("/v1/friends", method: "POST", body: FriendOrderBody(friendIDs: ids))
+    }
+
+    func removeFriend(id: Int) async throws {
+        let _: EmptyResponse = try await request("/v1/friends/\(id)", method: "DELETE")
+    }
+
     func renameFriend(id: Int, alias: String?) async throws {
         let _: EmptyResponse = try await request("/v1/friends/\(id)", method: "PATCH", body: FriendAliasBody(alias: alias))
     }

@@ -468,7 +468,7 @@ struct SplitEditorView: View {
                     Text("Equally").tag(false); Text("Exact amounts").tag(true)
                 }.pickerStyle(.segmented)
                 if friends.isEmpty {
-                    Label("Connect Splitwise from Cards & Accounts to load friends and groups.", systemImage: "person.2.slash")
+                    Label("Add people from Splitwise in the Friends tab to start splitting.", systemImage: "person.2.slash")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 ForEach(friends) { friend in
@@ -490,11 +490,15 @@ struct SplitEditorView: View {
             if !groups.isEmpty {
                 Section("Quick groups") {
                     ForEach(groups) { group in
+                        let missingMembers = !Set(group.friendIDs).isSubset(of: Set(friends.map(\.id)))
                         Button {
-                            selected = Set(group.friendIDs.filter { id in friends.contains(where: { $0.id == id }) })
+                            selected = Set(group.friendIDs)
                         } label: {
-                            HStack { Label(group.name, systemImage: "person.3.fill"); Spacer(); Text("\(group.friendIDs.count)").foregroundStyle(.secondary) }
-                        }
+                            VStack(alignment: .leading) {
+                                HStack { Label(group.name, systemImage: "person.3.fill"); Spacer(); Text("\(group.friendIDs.count)").foregroundStyle(.secondary) }
+                                if missingMembers { Text("Add this group's members in Friends to use it.").font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }.disabled(missingMembers)
                     }
                 }
             }
@@ -505,13 +509,14 @@ struct SplitEditorView: View {
         }
         .navigationTitle("Split expense").navigationBarTitleDisplayMode(.inline)
         .task {
-            applySuggestion()
-            if session.isDemoMode { friends = DemoData.friends; return }
+            if session.isDemoMode { friends = session.demoFriends; applySuggestion(); selected.formIntersection(Set(friends.map(\.id))); return }
             do {
                 async let liveFriends = session.api.friends()
                 async let liveGroups = session.api.friendGroups()
                 friends = try await liveFriends
                 groups = try await liveGroups
+                applySuggestion()
+                selected.formIntersection(Set(friends.map(\.id)))
             } catch { }
         }
     }

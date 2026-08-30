@@ -9,6 +9,7 @@ struct FriendsManagementView: View {
     @State private var groupEditor: GroupEditorContext?
     @State private var message: String?
     @State private var loading = false
+    @State private var showingAddFriends = false
 
     private var displayedFriends: [SplitwiseFriend] {
         switch sort {
@@ -56,16 +57,20 @@ struct FriendsManagementView: View {
             }
 
             Section("Friends") {
+                Button { showingAddFriends = true } label: { Label("Add friends from Splitwise", systemImage: "person.badge.plus") }
                 if loading && friends.isEmpty { HStack { Spacer(); ProgressView(); Spacer() } }
                 if !loading && friends.isEmpty {
-                    ContentUnavailableView("No Splitwise friends", systemImage: "person.2.slash", description: Text("Connect Splitwise from Cards & Accounts, then refresh this screen."))
+                    ContentUnavailableView("Your friends list is empty", systemImage: "person.2", description: Text("Add only the people you split with from your Splitwise friends. Nobody is added automatically."))
                 }
                 ForEach(displayedFriends) { friend in
                     FriendManagementRow(friend: friend)
                         .moveDisabled(sort != .custom)
                         .contentShape(.rect)
                         .onTapGesture { renamingFriend = friend }
-                        .swipeActions { Button("Rename") { renamingFriend = friend }.tint(.indigo) }
+                        .swipeActions {
+                            Button("Remove", role: .destructive) { Task { await remove(friend) } }
+                            Button("Rename") { renamingFriend = friend }.tint(.indigo)
+                        }
                 }
                 .onMove(perform: moveFriends)
             }
@@ -79,6 +84,14 @@ struct FriendsManagementView: View {
             ToolbarItem(placement: .topBarTrailing) { Button { Task { await load() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(loading) }
         }
         .task { await load() }
+        .sheet(isPresented: $showingAddFriends) {
+            AddFriendsView(addedIDs: Set(friends.map(\.id))) { selected in
+                if session.isDemoMode {
+                    session.demoFriends.append(contentsOf: selected.filter { item in !session.demoFriends.contains(where: { $0.id == item.id }) })
+                } else { try await session.api.addFriends(ids: selected.map(\.id)) }
+                await load()
+            }
+        }
         .sheet(item: $renamingFriend) { friend in
             RenameFriendView(friend: friend) { alias in await rename(friend, alias: alias) }
         }
@@ -92,7 +105,7 @@ struct FriendsManagementView: View {
     @MainActor private func load() async {
         loading = true; defer { loading = false }
         if session.isDemoMode {
-            friends = DemoData.friends.sorted { ($0.sortOrder ?? 0) < ($1.sortOrder ?? 0) }
+            friends = session.demoFriends
             return
         }
         do {
@@ -110,7 +123,7 @@ struct FriendsManagementView: View {
         friends = ordered.enumerated().map { index, friend in
             SplitwiseFriend(id: friend.id, firstName: friend.firstName, lastName: friend.lastName, alias: friend.alias, sortOrder: index, interactionCount: friend.interactionCount)
         }
-        guard !session.isDemoMode else { return }
+        guard !session.isDemoMode else { session.demoFriends = friends; return }
         Task { do { try await session.api.reorderFriends(ids: friends.map(\.id)) } catch { message = error.localizedDescription } }
     }
 
@@ -121,6 +134,17 @@ struct FriendsManagementView: View {
         }
         guard let index = friends.firstIndex(where: { $0.id == friend.id }) else { return }
         friends[index] = SplitwiseFriend(id: friend.id, firstName: friend.firstName, lastName: friend.lastName, alias: alias, sortOrder: friend.sortOrder, interactionCount: friend.interactionCount)
+        if session.isDemoMode { session.demoFriends = friends }
+    }
+
+    @MainActor private func remove(_ friend: SplitwiseFriend) async {
+        if !session.isDemoMode {
+            do { try await session.api.removeFriend(id: friend.id) }
+            catch { message = error.localizedDescription; return }
+        }
+        friends.removeAll { $0.id == friend.id }
+        if session.isDemoMode { session.demoFriends = friends }
+        message = "Removed from your LazySplit list. Splitwise, existing groups, and past expenses are unchanged."
     }
 
     @MainActor private func saveGroup(_ existing: FriendGroup?, name: String, friendIDs: [Int]) async throws {
@@ -223,6 +247,11 @@ private struct FriendGroupEditorView: View {
                             HStack { Text(friend.displayName).foregroundStyle(.primary); Spacer(); Image(systemName: selected.contains(friend.id) ? "checkmark.circle.fill" : "circle").foregroundStyle(.indigo) }
                         }
                     }
+                    let hiddenCount = selected.subtracting(Set(friends.map(\.id))).count
+                    if hiddenCount > 0 {
+                        Text("\(hiddenCount) existing member(s) are not in your friends list. They will stay in this group; add them from Splitwise to edit their membership.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if let errorMessage { Section { Text(errorMessage).foregroundStyle(.red) } }
             }
@@ -233,13 +262,91 @@ private struct FriendGroupEditorView: View {
                     Button("Save") {
                         Task { @MainActor in
                             saving = true; defer { saving = false }
-                            do { try await onSave(name.trimmingCharacters(in: .whitespacesAndNewlines), friends.map(\.id).filter(selected.contains)); dismiss() }
+                            do { try await onSave(name.trimmingCharacters(in: .whitespacesAndNewlines), selected.sorted()); dismiss() }
                             catch { errorMessage = error.localizedDescription }
                         }
                     }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selected.isEmpty || saving)
                 }
             }
         }
+    }
+}
+
+private struct AddFriendsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppSession.self) private var session
+    let addedIDs: Set<Int>
+    let onAdd: @MainActor ([SplitwiseFriend]) async throws -> Void
+    @State private var directory: [SplitwiseFriend] = []
+    @State private var selected: Set<Int> = []
+    @State private var search = ""
+    @State private var loading = false
+    @State private var saving = false
+    @State private var errorMessage: String?
+
+    private var available: [SplitwiseFriend] {
+        directory.filter { !addedIDs.contains($0.id) }
+    }
+    private var results: [SplitwiseFriend] {
+        available.filter { search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) || $0.originalName.localizedCaseInsensitiveContains(search) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("Choose who appears in LazySplit. This won't create or change friendships in Splitwise.").font(.subheadline).foregroundStyle(.secondary)
+                }
+                if loading { ProgressView("Loading Splitwise friends…") }
+                if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+                if !loading && errorMessage == nil && results.isEmpty {
+                    ContentUnavailableView(search.isEmpty ? "No friends to add" : "No matches", systemImage: "person.2", description: Text(search.isEmpty ? "Everyone on this list is already added, or Splitwise has no friends yet. Pull to refresh after adding someone in Splitwise." : "Try another name."))
+                }
+                ForEach(results) { friend in
+                    Button {
+                        if selected.contains(friend.id) { selected.remove(friend.id) } else { selected.insert(friend.id) }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(friend.displayName).foregroundStyle(.primary)
+                                if friend.alias != nil { Text(friend.originalName).font(.caption).foregroundStyle(.secondary) }
+                            }
+                            Spacer()
+                            Image(systemName: selected.contains(friend.id) ? "checkmark.circle.fill" : "circle").foregroundStyle(.indigo)
+                        }
+                    }.accessibilityAddTraits(selected.contains(friend.id) ? .isSelected : [])
+                }
+            }
+            .searchable(text: $search, prompt: "Search Splitwise friends")
+            .refreshable { await load(refresh: true) }
+            .navigationTitle("Add friends")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add\(selected.isEmpty ? "" : " (\(selected.count))")") {
+                        Task { @MainActor in
+                            saving = true; defer { saving = false }
+                            do { try await onAdd(available.filter { selected.contains($0.id) }); dismiss() }
+                            catch { errorMessage = error.localizedDescription }
+                        }
+                    }.disabled(selected.isEmpty || saving || loading)
+                }
+            }
+            .interactiveDismissDisabled(saving)
+            .task { await load(refresh: false) }
+        }
+    }
+
+    @MainActor private func load(refresh: Bool) async {
+        guard !saving else { return }
+        loading = true; defer { loading = false }
+        do {
+            directory = session.isDemoMode ? DemoData.friends : try await session.api.availableFriends(refresh: refresh)
+            selected.formIntersection(Set(available.map(\.id)))
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
     }
 }
 

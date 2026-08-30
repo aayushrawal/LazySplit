@@ -107,6 +107,9 @@ CREATE TABLE IF NOT EXISTS friend_preferences (
   PRIMARY KEY(user_id, splitwise_user_id)
 );
 
+-- Opt-in only: existing aliases/order do not implicitly add a friend.
+ALTER TABLE friend_preferences ADD COLUMN IF NOT EXISTS selected boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS friend_groups (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,

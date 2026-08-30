@@ -2,16 +2,19 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireUser } from "./auth.js";
 import { pool, transaction } from "./db.js";
+import { refreshCache } from "./splitwise.js";
 
 type CachedFriend = { id: number; first_name?: string | null; last_name?: string | null; email?: string | null };
 
 export async function friendRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/v1/friends", { preHandler: requireUser }, async (request, reply) => {
+  app.get<{ Querystring: { available?: string; refresh?: string } }>("/v1/friends", { preHandler: requireUser }, async (request, reply) => {
+    const available = request.query.available === "true";
+    if (available && request.query.refresh === "true") await refreshCache(request.userID);
     const cache = await pool.query<{ friends: CachedFriend[] }>("SELECT friends FROM splitwise_cache WHERE user_id=$1", [request.userID]);
-    if (!cache.rows[0]) return reply.code(409).send({ message: "Connect Splitwise to manage friends." });
+    if (!cache.rows[0]) return available ? reply.code(409).send({ message: "Connect Splitwise from Cards & Accounts to add friends." }) : { friends: [] };
     const [preferences, interactions] = await Promise.all([
-      pool.query<{ splitwise_user_id: string; alias: string | null; sort_order: number | null }>(
-        "SELECT splitwise_user_id,alias,sort_order FROM friend_preferences WHERE user_id=$1", [request.userID]),
+      pool.query<{ splitwise_user_id: string; alias: string | null; sort_order: number | null; selected: boolean }>(
+        "SELECT splitwise_user_id,alias,sort_order,selected FROM friend_preferences WHERE user_id=$1", [request.userID]),
       pool.query<{ splitwise_user_id: string; interaction_count: number }>(
         `SELECT (participant->>'userID')::bigint AS splitwise_user_id,count(*)::integer AS interaction_count
          FROM split_drafts d CROSS JOIN LATERAL jsonb_array_elements(COALESCE(d.payload->'participants','[]'::jsonb)) participant
@@ -20,7 +23,7 @@ export async function friendRoutes(app: FastifyInstance): Promise<void> {
     ]);
     const preferenceByID = new Map(preferences.rows.map((row) => [Number(row.splitwise_user_id), row]));
     const interactionsByID = new Map(interactions.rows.map((row) => [Number(row.splitwise_user_id), row.interaction_count]));
-    const friends = cache.rows[0].friends.map((friend) => {
+    const friends = cache.rows[0].friends.filter((friend) => available || preferenceByID.get(friend.id)?.selected === true).map((friend) => {
       const preference = preferenceByID.get(friend.id);
       return {
         id: friend.id,
@@ -32,6 +35,27 @@ export async function friendRoutes(app: FastifyInstance): Promise<void> {
       };
     });
     return { friends };
+  });
+
+  app.post("/v1/friends", { preHandler: requireUser }, async (request, reply) => {
+    const { friendIDs } = z.object({ friendIDs: z.array(z.number().int().positive()).min(1).max(500) }).parse(request.body);
+    const cache = await pool.query<{ friends: CachedFriend[] }>("SELECT friends FROM splitwise_cache WHERE user_id=$1", [request.userID]);
+    const available = new Set(cache.rows[0]?.friends.map((friend) => friend.id) ?? []);
+    if (friendIDs.some((id) => !available.has(id))) return reply.code(422).send({ message: "Choose friends from your Splitwise list. Refresh the list and try again." });
+    await transaction(async (client) => {
+      for (const id of new Set(friendIDs)) {
+        await client.query(
+          `INSERT INTO friend_preferences(user_id,splitwise_user_id,selected) VALUES($1,$2,true)
+           ON CONFLICT(user_id,splitwise_user_id) DO UPDATE SET selected=true,updated_at=now()`, [request.userID, id]);
+      }
+    });
+    return {};
+  });
+
+  app.delete("/v1/friends/:id", { preHandler: requireUser }, async (request) => {
+    const { id } = z.object({ id: z.coerce.number().int().positive() }).parse(request.params);
+    await pool.query("UPDATE friend_preferences SET selected=false,updated_at=now() WHERE user_id=$1 AND splitwise_user_id=$2", [request.userID, id]);
+    return {};
   });
 
   app.patch("/v1/friends/:id", { preHandler: requireUser }, async (request) => {
