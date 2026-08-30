@@ -33,6 +33,13 @@ try {
   assert.equal(inbox.json().transactions[0].state, "personal");
   assert.equal(inbox.json().transactions[0].city, "Test City");
   assert.equal(inbox.json().transactions[0].accountID, accountID, "Stable account identity is returned for color coding");
+  const refundID = randomUUID();
+  const importedRefund = await app.inject({ method: "POST", url: "/v1/transactions/import", headers, payload: {
+    idempotencyKey: randomUUID(), transactions: [{ id: refundID, accountName: "Synthetic Card", accountMask: "1234",
+      merchant: "Synthetic Refund", date: "2026-08-02T00:00:00Z", amountMinor: 500, currencyCode: "USD", fingerprint: randomUUID(), isCredit: true }]
+  } });
+  assert.equal(importedRefund.statusCode, 200, importedRefund.body);
+  assert.equal((await pool.query("SELECT is_credit FROM transactions WHERE id=$1 AND user_id=$2", [refundID, userID])).rows[0].is_credit, true);
   const blocked = await publish();
   assert.equal(blocked.statusCode, 409);
   assert.match(blocked.json().message, /Personal transactions/);

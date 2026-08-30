@@ -1,7 +1,57 @@
 import XCTest
+import SwiftUI
+import SwiftData
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    @MainActor
+    func testInboxRenderingAcrossAppearanceAndTextSizes() async throws {
+        let container = try ModelContainer(for: TransactionRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let session = AppSession()
+        session.isAuthenticated = true
+        session.isDemoMode = true
+        let examples: [(String, Int, ReviewState, String)] = [
+            ("Taco Joint", 6840, .needsReview, "FOOD_AND_DRINK"),
+            ("United Airlines", 42819, .sharedDraft, "TRAVEL"),
+            ("Whole Foods Market", 9732, .personal, "GROCERIES"),
+            ("Lyft", 2487, .pending, "TRANSPORTATION")
+        ]
+        for (index, item) in examples.enumerated() {
+            let record = TransactionRecord(source: .plaid, accountName: index.isMultiple(of: 2) ? "Sapphire Preferred" : "Freedom Unlimited",
+                accountMask: index.isMultiple(of: 2) ? "4242" : "8811", merchant: item.0,
+                date: Date(timeIntervalSince1970: 1788048000 - Double(index * 86_400)), amountMinor: item.1, state: item.2,
+                category: item.3, isDemo: true)
+            record.city = "Chicago"
+            container.mainContext.insert(record)
+        }
+        let older = TransactionRecord(source: .plaid, accountName: "Sapphire Preferred", accountMask: "4242", merchant: "Mountain Cabin",
+            date: Date(timeIntervalSince1970: 1782864000), amountMinor: 61200, isDemo: true)
+        container.mainContext.insert(older)
+        try container.mainContext.save()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previousWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        defer { window.isHidden = true; previousWindow?.makeKeyAndVisible() }
+        for (name, scheme, size) in [("light", ColorScheme.light, DynamicTypeSize.large), ("dark", .dark, .large), ("accessibility", .light, .accessibility3)] {
+            let content = NavigationStack { InboxView() }
+                .environment(session).modelContainer(container)
+                .environment(\.colorScheme, scheme).environment(\.dynamicTypeSize, size)
+            window.rootViewController = UIHostingController(rootView: content)
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(600))
+            window.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "inbox-\(name)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertEqual(image.size.width, 393)
+        }
+    }
+
     func testAccountColorsStayStableAcrossFilteringNewCardsAndReloads() throws {
         let first = AccountColors.assignments(for: ["card-b", "card-a"], retaining: [:])
         XCTAssertNotEqual(first["card-a"], first["card-b"])
@@ -101,10 +151,8 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertFalse(filters.matches(transaction))
         filters.account = transaction.cardLabel
         XCTAssertTrue(filters.matches(transaction))
-        filters.kind = "Credits / refunds"
-        XCTAssertFalse(filters.matches(transaction))
         transaction.isCredit = true
-        XCTAssertTrue(filters.matches(transaction))
+        XCTAssertFalse(filters.matches(transaction))
         let larger = record(amount: 5000)
         let euro = record(amount: 100)
         euro.currencyCode = "EUR"
@@ -118,6 +166,44 @@ final class CSVImporterTests: XCTestCase {
             let decoded = try JSONDecoder.api.decode(Payload.self, from: Data("{\"date\":\"\(value)\"}".utf8))
             XCTAssertEqual(decoded.date.timeIntervalSince1970, 1788048000)
         }
+    }
+
+    func testInboxAlwaysExcludesCreditsAndGroupsByMonthAndYear() {
+        let august = record()
+        august.date = Date(timeIntervalSince1970: 1785542400) // August 1, midnight UTC
+        let july = record(state: .personal)
+        july.date = august.date.addingTimeInterval(-86_400)
+        let refund = record()
+        refund.isCredit = true
+        let lastYear = record()
+        lastYear.date = InboxMonth.calendar.date(byAdding: .year, value: -1, to: august.date)!
+        var filters = InboxFilters()
+        XCTAssertFalse(filters.matches(refund))
+        filters = InboxFilters() // Reset must not bring refunds back.
+        XCTAssertFalse(filters.matches(refund))
+        XCTAssertTrue(filters.matches(july))
+        let groups = InboxMonth.group([july, refund, august, lastYear], sort: .newest)
+        XCTAssertEqual(groups.count, 3)
+        XCTAssertEqual(groups.first?.transactions.map(\.id), [august.id])
+        XCTAssertEqual(InboxMonth.calendar.component(.month, from: groups[0].id), 8)
+        XCTAssertEqual(groups[1].transactions.map(\.id), [july.id])
+        XCTAssertEqual(InboxMonth.group([july, august, lastYear], sort: .oldest).first?.transactions.first?.id, lastYear.id)
+        XCTAssertFalse(filters.matches(record(amount: 0)))
+        XCTAssertFalse(filters.matches(record(amount: -500)))
+    }
+
+    func testMonthTotalsSeparateCurrenciesAndExcludePendingAndRefunds() {
+        let small = record(amount: 1000), large = record(amount: 2000)
+        let euro = record(amount: 800), pending = record(amount: 9000, state: .pending), refund = record(amount: 600)
+        euro.currencyCode = "EUR"
+        refund.isCredit = true
+        let group = InboxMonth.group([small, euro, pending, large, refund], sort: .largest)[0]
+        XCTAssertEqual(group.transactions.count, 4)
+        XCTAssertEqual(group.transactions.map(\.id), [euro.id, pending.id, large.id, small.id])
+        XCTAssertEqual(group.pendingCount, 1)
+        XCTAssertEqual(group.reviewCount, 3)
+        XCTAssertEqual(group.postedTotals.map(\.currency), ["EUR", "USD"])
+        XCTAssertEqual(group.postedTotals.map(\.amount), [8, 30])
     }
 
     func testQuotedMerchantAndDuplicateDetection() throws {
@@ -137,6 +223,18 @@ final class CSVImporterTests: XCTestCase {
         let preview = try CSVImporter.preview(data: data)
         let result = try CSVImporter.transactions(data: data, mapping: preview.suggestedMapping, fallbackAccount: "Card", knownFingerprints: [])
         XCTAssertEqual(result.0.map(\.amountMinor), [9015, 1220])
+        XCTAssertEqual(result.0.map(\.isCredit), [false, true])
+        XCTAssertEqual(result.0.filter { InboxFilters().matches($0) }.count, 1)
+    }
+
+    func testMatchingChargeAndRefundRemainSeparate() throws {
+        let data = Data("Date,Description,Debit,Credit\n2026-08-01,Shop,25.00,\n2026-08-01,Shop,,25.00\n".utf8)
+        let preview = try CSVImporter.preview(data: data)
+        let (records, duplicates) = try CSVImporter.transactions(data: data, mapping: preview.suggestedMapping, fallbackAccount: "Card", knownFingerprints: [])
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(duplicates, 0)
+        XCTAssertEqual(records.map(\.isCredit), [false, true])
+        XCTAssertEqual(records.filter { InboxFilters().matches($0) }.count, 1)
     }
 
     func testFingerprintNormalizesMerchantPunctuation() {

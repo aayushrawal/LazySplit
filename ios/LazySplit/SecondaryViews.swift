@@ -256,7 +256,7 @@ struct CSVImportView: View {
             modelContext.insert(ImportBatch(fileName: fileName, rowCount: records.count, duplicateCount: duplicates, issuerKey: fallbackAccount))
             try modelContext.save(); message = "Imported \(records.count) transactions and skipped \(duplicates) duplicates."
             if KeychainStore.read("sessionToken") != nil {
-                let values = records.map { ImportedTransaction(id: $0.id, accountName: $0.accountName, accountMask: $0.accountMask, merchant: $0.merchant, originalDescription: $0.originalDescription, date: $0.date, amountMinor: $0.amountMinor, currencyCode: $0.currencyCode, fingerprint: $0.fingerprint) }
+                let values = records.map { ImportedTransaction(id: $0.id, accountName: $0.accountName, accountMask: $0.accountMask, merchant: $0.merchant, originalDescription: $0.originalDescription, date: $0.date, amountMinor: $0.amountMinor, currencyCode: $0.currencyCode, fingerprint: $0.fingerprint, isCredit: $0.isCredit) }
                 Task {
                     do { let result = try await session.api.importTransactions(values, idempotencyKey: key); message = "Imported \(result.inserted) transactions and skipped \(duplicates + result.duplicates) duplicates." }
                     catch { message = "Saved on this iPhone. Server sync will retry later: \(error.localizedDescription)" }

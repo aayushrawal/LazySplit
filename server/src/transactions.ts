@@ -7,7 +7,7 @@ import { pool, transaction } from "./db.js";
 const importedTransaction = z.object({
   id: z.string().uuid(), accountName: z.string().min(1), accountMask: z.string().default(""), merchant: z.string().min(1),
   originalDescription: z.string().default(""), date: z.string().datetime(), amountMinor: z.number().int().positive(),
-  currencyCode: z.string().length(3), fingerprint: z.string().min(1)
+  currencyCode: z.string().length(3), fingerprint: z.string().min(1), isCredit: z.boolean().default(false)
 });
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
@@ -44,6 +44,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   app.post("/v1/transactions/import", { preHandler: requireUser }, async (request) => {
     const body = z.object({ idempotencyKey: z.string().min(8), transactions: z.array(importedTransaction).max(10_000) }).parse(request.body);
     return transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["import:" + request.userID]);
       const existingKey = await client.query<{ response: { inserted: number; duplicates: number } }>("SELECT response FROM idempotency_keys WHERE user_id=$1 AND idempotency_key=$2", [request.userID, body.idempotencyKey]);
       if (existingKey.rows[0]?.response) return existingKey.rows[0].response;
       let inserted = 0, duplicates = 0;
@@ -55,10 +56,11 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
           accountID = created.rows[0]!.id;
         }
         const result = await client.query(
-          `INSERT INTO transactions(id,user_id,account_id,source,merchant,original_description,transaction_date,amount_minor,currency_code,pending,review_state,fingerprint)
-           VALUES($1,$2,$3,'csv',$4,$5,$6,$7,$8,false,'needsReview',$9)
-           ON CONFLICT(user_id,fingerprint) DO NOTHING RETURNING id`,
-          [item.id, request.userID, accountID, item.merchant, item.originalDescription, item.date.slice(0,10), item.amountMinor, item.currencyCode, item.fingerprint]);
+          `INSERT INTO transactions(id,user_id,account_id,source,merchant,original_description,transaction_date,amount_minor,currency_code,pending,review_state,fingerprint,is_credit)
+           SELECT $1,$2,$3,'csv',$4,$5,$6,$7,$8,false,'needsReview',$9,$10
+           WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE user_id=$2 AND fingerprint=$9 AND is_credit=$10)
+           ON CONFLICT(id) DO NOTHING RETURNING id`,
+          [item.id, request.userID, accountID, item.merchant, item.originalDescription, item.date.slice(0,10), item.amountMinor, item.currencyCode, item.fingerprint, item.isCredit]);
         result.rowCount ? inserted++ : duplicates++;
       }
       const response = { inserted, duplicates };

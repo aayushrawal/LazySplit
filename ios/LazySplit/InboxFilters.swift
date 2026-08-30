@@ -47,7 +47,7 @@ enum InboxSort: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-struct InboxFilters {
+struct InboxFilters: Equatable {
     var state: ReviewState? = nil
     var excludePersonal = false
     var account: String?
@@ -57,7 +57,6 @@ struct InboxFilters {
     var currency: String?
     var channel: String?
     var source: String?
-    var kind = "All"
     var onlyPossibleDuplicates = false
     var minimum = ""
     var maximum = ""
@@ -83,12 +82,12 @@ struct InboxFilters {
 
     var activeCount: Int {
         [state != nil, excludePersonal, account != nil, category != nil, location != nil, merchant != nil,
-         currency != nil, channel != nil, source != nil, kind != "All", onlyPossibleDuplicates,
+         currency != nil, channel != nil, source != nil, onlyPossibleDuplicates,
          !minimum.isEmpty || !maximum.isEmpty, useDates].filter { $0 }.count
     }
 
     func matches(_ transaction: TransactionRecord, search: String = "") -> Bool {
-        guard validationError == nil else { return false }
+        guard validationError == nil, !transaction.isCredit, transaction.amountMinor > 0 else { return false }
         if excludePersonal && transaction.state == .personal { return false }
         if let state, transaction.state != state { return false }
         if let account, transaction.cardLabel != account { return false }
@@ -98,8 +97,6 @@ struct InboxFilters {
         if let currency, transaction.currencyCode != currency { return false }
         if let channel, (transaction.paymentChannel ?? "unknown") != channel { return false }
         if let source, transaction.source.rawValue != source { return false }
-        if kind == "Charges" && transaction.isCredit { return false }
-        if kind == "Credits / refunds" && !transaction.isCredit { return false }
         if onlyPossibleDuplicates && transaction.possibleDuplicateID == nil { return false }
         if let min = Self.amount(minimum), transaction.amount < min { return false }
         if let max = Self.amount(maximum), transaction.amount > max { return false }
@@ -148,11 +145,8 @@ struct InboxFilterSheet: View {
                     optionPicker("Currency", selection: $filters.currency, values: transactions.map(\.currencyCode))
                     TextField("Minimum amount", text: $filters.minimum).keyboardType(.decimalPad)
                     TextField("Maximum amount", text: $filters.maximum).keyboardType(.decimalPad)
-                    Picker("Type", selection: $filters.kind) {
-                        ForEach(["All", "Charges", "Credits / refunds"], id: \.self) { Text($0) }
-                    }
                 } header: { Text("Amount") } footer: {
-                    Text("Amounts are in each transaction’s original currency; choose a currency to compare like for like. Credits use their absolute amount.")
+                    Text("Inbox shows charges only; credits and refunds are excluded. Amounts stay in their original currency with no conversion.")
                 }
                 Section("Dates") {
                     Toggle("Limit date range", isOn: $filters.useDates)
@@ -181,7 +175,7 @@ struct InboxFilterSheet: View {
                 }
                 Section {
                     Picker("Sort", selection: $filters.sort) { ForEach(InboxSort.allCases) { Text($0.rawValue).tag($0) } }
-                } footer: { Text("Amount sorting groups currencies separately; no conversion is performed.") }
+                } footer: { Text("Transactions are grouped by month. Amount sorting applies within each month, with currencies kept separate.") }
                 if let error = filters.validationError { Text(error).foregroundStyle(.red) }
                 Button("Reset filters") { filters = InboxFilters() }
             }

@@ -188,6 +188,7 @@ struct InboxView: View {
     @State private var selected = Set<UUID>()
     @State private var undoActions: [(UUID, ReviewState)] = []
     @State private var lastAction = ""
+    @State private var collapsedMonths = Set<Date>()
     @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
 
@@ -206,71 +207,93 @@ struct InboxView: View {
     }
 
     private var visibleTransactions: [TransactionRecord] {
-        allTransactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) }
+        allTransactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isCredit && $0.amountMinor > 0 }
     }
+
+    private var months: [InboxMonth] { InboxMonth.group(filtered, sort: filters.sort) }
 
     var body: some View {
         let colors = accountColors
+        let monthGroups = months
         List(selection: $selected) {
-            Toggle(isOn: $colorCodeByAccount) {
-                Label("Color by card / account", systemImage: "paintpalette")
-            }
-            .accessibilityHint("Adds an account color to each transaction without changing which transactions are visible.")
-            if colorCodeByAccount && !accountLegend.isEmpty {
-                DisclosureGroup("Card / account colors") {
-                    ForEach(accountLegend, id: \.accountColorKey) { transaction in
-                        HStack {
-                            Circle().fill(AccountColors.color(for: transaction.accountColorKey, in: colors))
-                                .frame(width: 12, height: 12).accessibilityHidden(true)
-                            Text(transaction.cardLabel).font(.caption)
+            Section {
+                InboxSummaryCard(transactions: filtered, filtering: filters.activeCount > 0 || !search.isEmpty)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                HStack {
+                    Button { showingFilters = true } label: {
+                        Label(filters.activeCount == 0 ? "Filters" : "Filters · \(filters.activeCount)", systemImage: "line.3.horizontal.decrease")
+                            .font(.subheadline.weight(.semibold))
+                    }.buttonStyle(.bordered).clipShape(.capsule)
+                    Spacer()
+                    Menu {
+                        Toggle("Color by card / account", isOn: $colorCodeByAccount)
+                        Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
+                        Divider()
+                        Button("Expand all months", systemImage: "rectangle.expand.vertical") { collapsedMonths.removeAll() }
+                        Button("Collapse all months", systemImage: "rectangle.compress.vertical") {
+                            collapsedMonths = Set(monthGroups.map(\.id)); selected.removeAll()
+                        }
+                    } label: { Label("View", systemImage: "slider.horizontal.3").font(.subheadline.weight(.semibold)) }
+                }
+                .listRowInsets(EdgeInsets(top: 14, leading: 0, bottom: 0, trailing: 0))
+                .listRowBackground(Color.clear)
+                if colorCodeByAccount && !accountLegend.isEmpty {
+                    DisclosureGroup("Card / account colors") {
+                        ForEach(accountLegend, id: \.accountColorKey) { transaction in
+                            HStack {
+                                Circle().fill(AccountColors.color(for: transaction.accountColorKey, in: colors))
+                                    .frame(width: 10, height: 10).accessibilityHidden(true)
+                                Text(transaction.cardLabel).font(.caption)
+                            }
                         }
                     }
                 }
-            }
-            if session.isRefreshingTransactions { ProgressView("Loading transactions…") }
-            Text("\(filtered.count) matching transactions").font(.caption).foregroundStyle(.secondary)
-            if let error = filters.validationError { Text(error).foregroundStyle(.red) }
-            if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
-            if let error = session.transactionRefreshError {
-                Text(error).foregroundStyle(.red)
-            }
-            if filtered.isEmpty {
-                ContentUnavailableView("No matching transactions", systemImage: "line.3.horizontal.decrease.circle", description: Text("Change your filters or pull to refresh. You can optionally hide personal transactions in Filters."))
+                if session.isRefreshingTransactions { ProgressView("Updating charges…") }
+                if let error = filters.validationError { Text(error).foregroundStyle(.red) }
+                if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
+                if let error = session.transactionRefreshError { Text(error).foregroundStyle(.red) }
+            }.listRowSeparator(.hidden)
+            if monthGroups.isEmpty {
+                ContentUnavailableView("No matching charges", systemImage: "tray", description: Text("Try different filters or pull to refresh. Credits and refunds are not shown in Inbox."))
                     .listRowBackground(Color.clear)
             }
-            ForEach(filtered) { transaction in
-                NavigationLink { SplitEditorView(transaction: transaction) } label: {
-                    TransactionRow(transaction: transaction, accountColor: colorCodeByAccount ? AccountColors.color(for: transaction.accountColorKey, in: colors) : nil)
+            ForEach(monthGroups) { month in
+                Section {
+                    InboxMonthHeader(month: month, expanded: !collapsedMonths.contains(month.id)) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            if collapsedMonths.contains(month.id) { collapsedMonths.remove(month.id) }
+                            else {
+                                collapsedMonths.insert(month.id)
+                                selected.subtract(month.transactions.map(\.id))
+                            }
+                        }
+                    }
+                    .listRowSeparator(.hidden)
+                    if !collapsedMonths.contains(month.id) {
+                        ForEach(month.transactions) { transaction in
+                            transactionLink(transaction, colors: colors)
+                        }
+                    }
                 }
-                    .listRowBackground(colorCodeByAccount ? AccountColors.color(for: transaction.accountColorKey, in: colors).opacity(0.07) : Color(.systemBackground))
-                    .tag(transaction.id)
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        if transaction.canClassify {
-                            Button { set(transaction, to: transaction.state == .personal ? .needsReview : .sharedDraft) } label: {
-                                Label(transaction.state == .personal ? "Return to review" : "Shared", systemImage: "person.2.fill")
-                            }.tint(.indigo)
-                        }
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        if transaction.canClassify && transaction.state != .personal {
-                            Button { set(transaction, to: .personal) } label: { Label("Personal", systemImage: "person.fill") }.tint(.gray)
-                        }
-                    }
             }
         }
-        .listStyle(.plain)
-        .navigationTitle("Review")
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(18)
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Inbox")
         .refreshable { await session.refreshTransactions(in: modelContext) }
         .task { await session.refreshTransactions(in: modelContext) }
         .onChange(of: accountKeys, initial: true) { _, _ in
             if let data = try? JSONEncoder().encode(accountColors) { savedAccountColors = data }
         }
-        .searchable(text: $search, prompt: "Merchant, description, category or location")
+        .onChange(of: search) { _, _ in collapsedMonths.removeAll(); selected.removeAll() }
+        .onChange(of: filters) { _, _ in collapsedMonths.removeAll(); selected.removeAll() }
+        .onChange(of: filters.excludePersonal) { _, hide in if hide && filters.state == .personal { filters.state = nil } }
+        .searchable(text: $search, prompt: "Search charges")
         .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: visibleTransactions) }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { showingFilters = true } label: { Label("Filters (\(filters.activeCount))", systemImage: "line.3.horizontal.decrease.circle") }
-            }
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
             if !selected.isEmpty {
                 ToolbarItemGroup(placement: .bottomBar) {
@@ -284,6 +307,27 @@ struct InboxView: View {
             if !undoActions.isEmpty {
                 HStack { Text(lastAction); Spacer(); Button("Undo") { undo() } }
                     .padding().background(.regularMaterial).clipShape(.rect(cornerRadius: 14)).padding()
+            }
+        }
+    }
+
+    private func transactionLink(_ transaction: TransactionRecord, colors: [String: Int]) -> some View {
+        NavigationLink { SplitEditorView(transaction: transaction) } label: {
+            TransactionRow(transaction: transaction, accountColor: colorCodeByAccount ? AccountColors.color(for: transaction.accountColorKey, in: colors) : nil)
+        }
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 14))
+        .listRowBackground(Color(.secondarySystemGroupedBackground))
+        .tag(transaction.id)
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            if transaction.canClassify {
+                Button { set(transaction, to: transaction.state == .personal ? .needsReview : .sharedDraft) } label: {
+                    Label(transaction.state == .personal ? "Return to review" : "Shared", systemImage: "person.2.fill")
+                }.tint(.indigo)
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if transaction.canClassify && transaction.state != .personal {
+                Button { set(transaction, to: .personal) } label: { Label("Personal", systemImage: "person.fill") }.tint(.gray)
             }
         }
     }
@@ -316,41 +360,6 @@ struct InboxView: View {
             try modelContext.save()
             Task { await session.syncReviewDecisions(in: modelContext) }
         } catch { session.reviewSyncError = error.localizedDescription }
-    }
-}
-
-struct TransactionRow: View {
-    let transaction: TransactionRecord
-    var accountColor: Color? = nil
-    var body: some View {
-        HStack(spacing: 14) {
-            if let accountColor {
-                RoundedRectangle(cornerRadius: 2).fill(accountColor).frame(width: 4, height: 44)
-                    .accessibilityHidden(true)
-            }
-            Image(systemName: icon).frame(width: 42, height: 42).background((accountColor ?? .indigo).opacity(0.1), in: .circle).foregroundStyle(accountColor ?? .indigo)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(transaction.merchant).font(.headline).lineLimit(1)
-                Text("\(transaction.cardLabel) • \(transaction.date.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary)
-                Text("\(TransactionClassification.category(for: transaction).name)\(TransactionClassification.category(for: transaction).inferred ? " (suggested)" : "") · \(transaction.locationLabel)")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(transaction.amount, format: .currency(code: transaction.currencyCode)).font(.headline.monospacedDigit())
-                Text(transaction.state.title).font(.caption2).foregroundStyle(transaction.state == .failed ? .red : .secondary)
-                if transaction.isCredit { Text("Credit / refund").font(.caption2).foregroundStyle(.green) }
-            }
-        }.padding(.vertical, 5)
-    }
-    private var icon: String {
-        switch transaction.category?.lowercased() {
-        case "food": "fork.knife"
-        case "travel": "airplane"
-        case "transportation": "car.fill"
-        default: "creditcard.fill"
-        }
     }
 }
 

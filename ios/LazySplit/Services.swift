@@ -260,10 +260,12 @@ enum CSVImporter {
             }
             guard let amount = decimal(amountText), amount != 0 else { return nil }
             let minor = NSDecimalNumber(decimal: abs(amount) * 100).intValue
-            let fingerprint = TransactionFingerprint.make(account: account, date: date, amountMinor: minor, merchant: merchant)
+            let fingerprint = TransactionFingerprint.make(account: account, date: date, amountMinor: amount < 0 ? -minor : minor, merchant: merchant)
             if seen.contains(fingerprint) { duplicates += 1; return nil }
             seen.insert(fingerprint)
-            return TransactionRecord(source: .csv, accountName: account, merchant: merchant, originalDescription: merchant, date: date, amountMinor: minor, currencyCode: currency.uppercased(), fingerprint: fingerprint)
+            let record = TransactionRecord(source: .csv, accountName: account, merchant: merchant, originalDescription: merchant, date: date, amountMinor: minor, currencyCode: currency.uppercased(), fingerprint: fingerprint)
+            record.isCredit = amount < 0
+            return record
         }
         guard !records.isEmpty else { throw CSVImportError.invalidRows }
         return (records, duplicates)
@@ -351,7 +353,7 @@ struct RemoteTransaction: Decodable {
     let state: ReviewState; let category: String?; let fingerprint: String; let possibleDuplicateID: UUID?
 }
 private struct TransactionsResponse: Decodable { let transactions: [RemoteTransaction]; let nextCursor: UUID? }
-struct ImportedTransaction: Encodable, Sendable { let id: UUID; let accountName: String; let accountMask: String; let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String; let fingerprint: String }
+struct ImportedTransaction: Encodable, Sendable { let id: UUID; let accountName: String; let accountMask: String; let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String; let fingerprint: String; let isCredit: Bool }
 private struct ImportBody: Encodable, Sendable { let idempotencyKey: String; let transactions: [ImportedTransaction] }
 struct ImportResponse: Decodable { let inserted: Int; let duplicates: Int }
 private struct ConnectResponse: Decodable { let url: String }
