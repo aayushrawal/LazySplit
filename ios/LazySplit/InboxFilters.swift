@@ -175,7 +175,7 @@ struct InboxFilterSheet: View {
                 }
                 Section {
                     Picker("Sort", selection: $filters.sort) { ForEach(InboxSort.allCases) { Text($0.rawValue).tag($0) } }
-                } footer: { Text("Transactions are grouped by month. Amount sorting applies within each month, with currencies kept separate.") }
+                } footer: { Text("Choose month, year, or card grouping under View. Sorting applies within each history group, with currencies kept separate. New stays ordered by arrival.") }
                 if let error = filters.validationError { Text(error).foregroundStyle(.red) }
                 Button("Reset filters") { filters = InboxFilters() }
             }

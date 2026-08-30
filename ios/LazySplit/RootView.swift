@@ -188,7 +188,8 @@ struct InboxView: View {
     @State private var selected = Set<UUID>()
     @State private var undoActions: [(UUID, ReviewState)] = []
     @State private var lastAction = ""
-    @State private var collapsedMonths = Set<Date>()
+    @State private var collapsedGroups = Set<String>()
+    @AppStorage("inbox.historyGrouping") private var historyGrouping: InboxGrouping = .month
     @State private var newExpanded = true
     @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
@@ -212,17 +213,14 @@ struct InboxView: View {
     }
 
     private var newTransactions: [TransactionRecord] { InboxArrivalGroups.newTransactions(in: filtered) }
-    private var months: [InboxMonth] { InboxMonth.group(InboxArrivalGroups.monthlyTransactions(in: filtered), sort: filters.sort) }
+    private var historyGroups: [InboxHistoryGroup] { InboxHistoryGroup.group(filtered, by: historyGrouping, sort: filters.sort) }
 
     var body: some View {
         let colors = accountColors
-        let monthGroups = months
+        let groups = historyGroups
         let arrivals = newTransactions
         List(selection: $selected) {
             Section {
-                InboxSummaryCard(transactions: filtered, filtering: filters.activeCount > 0 || !search.isEmpty)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
                 HStack {
                     Button { showingFilters = true } label: {
                         Label(filters.activeCount == 0 ? "Filters" : "Filters · \(filters.activeCount)", systemImage: "line.3.horizontal.decrease")
@@ -230,12 +228,16 @@ struct InboxView: View {
                     }.buttonStyle(.bordered).clipShape(.capsule)
                     Spacer()
                     Menu {
+                        Picker("Group by", selection: $historyGrouping) {
+                            ForEach(InboxGrouping.allCases) { Text($0.title).tag($0) }
+                        }
+                        Divider()
                         Toggle("Color by card / account", isOn: $colorCodeByAccount)
                         Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
                         Divider()
-                        Button("Expand all months", systemImage: "rectangle.expand.vertical") { collapsedMonths.removeAll() }
-                        Button("Collapse all months", systemImage: "rectangle.compress.vertical") {
-                            collapsedMonths = Set(monthGroups.map(\.id)); selected.removeAll()
+                        Button("Expand all groups", systemImage: "rectangle.expand.vertical") { collapsedGroups.removeAll() }
+                        Button("Collapse all groups", systemImage: "rectangle.compress.vertical") {
+                            collapsedGroups = Set(groups.map(\.id)); selected.removeAll()
                         }
                     } label: { Label("View", systemImage: "slider.horizontal.3").font(.subheadline.weight(.semibold)) }
                 }
@@ -269,7 +271,7 @@ struct InboxView: View {
                     if !arrivals.isEmpty {
                         Button("Mark seen") { markNewSeen(arrivals) }
                             .font(.caption.weight(.semibold)).buttonStyle(.borderless)
-                            .accessibilityHint("Moves the \(arrivals.count) matching new charges into their monthly groups without changing their review status.")
+                            .accessibilityHint("Moves the \(arrivals.count) matching new charges into the grouped history without changing their review status.")
                     }
                 }
                 .listRowSeparator(.hidden)
@@ -286,26 +288,26 @@ struct InboxView: View {
                 ContentUnavailableView("No matching charges", systemImage: "tray", description: Text("Try different filters or pull to refresh. Credits and refunds are not shown in Inbox."))
                     .listRowBackground(Color.clear)
             }
-            if !monthGroups.isEmpty {
-                Text("Monthly").font(.headline).foregroundStyle(.secondary)
+            if !groups.isEmpty {
+                Text(historyGrouping.sectionTitle).font(.headline).foregroundStyle(.secondary)
                     .listRowBackground(Color.clear).listRowSeparator(.hidden)
                     .accessibilityAddTraits(.isHeader)
             }
-            ForEach(monthGroups) { month in
+            ForEach(groups) { group in
                 Section {
-                    InboxMonthHeader(month: month, expanded: !collapsedMonths.contains(month.id)) {
+                    InboxGroupHeader(group: group, expanded: !collapsedGroups.contains(group.id)) {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            if collapsedMonths.contains(month.id) { collapsedMonths.remove(month.id) }
+                            if collapsedGroups.contains(group.id) { collapsedGroups.remove(group.id) }
                             else {
-                                collapsedMonths.insert(month.id)
-                                selected.subtract(month.transactions.map(\.id))
+                                collapsedGroups.insert(group.id)
+                                selected.subtract(group.transactions.map(\.id))
                             }
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowSeparator(.hidden)
-                    if !collapsedMonths.contains(month.id) {
-                        ForEach(month.transactions) { transaction in
+                    if !collapsedGroups.contains(group.id) {
+                        ForEach(group.transactions) { transaction in
                             transactionLink(transaction, colors: colors)
                         }
                     }
@@ -319,15 +321,19 @@ struct InboxView: View {
         .navigationTitle("Inbox")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
-            InboxAccountLegend(accounts: accountLegend, colors: colors)
+            VStack(spacing: 0) {
+                InboxSummaryCard(transactions: filtered, filtering: filters.activeCount > 0 || !search.isEmpty)
+                InboxAccountLegend(accounts: accountLegend, colors: colors)
+            }.background(.regularMaterial)
         }
         .refreshable { await session.refreshTransactions(in: modelContext) }
         .task { await session.refreshTransactions(in: modelContext) }
         .onChange(of: accountKeys, initial: true) { _, _ in
             if let data = try? JSONEncoder().encode(accountColors) { savedAccountColors = data }
         }
-        .onChange(of: search) { _, _ in collapsedMonths.removeAll(); newExpanded = true; selected.removeAll() }
-        .onChange(of: filters) { _, _ in collapsedMonths.removeAll(); newExpanded = true; selected.removeAll() }
+        .onChange(of: search) { _, _ in collapsedGroups.removeAll(); newExpanded = true; selected.removeAll() }
+        .onChange(of: filters) { _, _ in collapsedGroups.removeAll(); newExpanded = true; selected.removeAll() }
+        .onChange(of: historyGrouping) { _, _ in collapsedGroups.removeAll(); selected.removeAll() }
         .onChange(of: arrivals.map(\.id)) { old, new in
             if !Set(new).subtracting(old).isEmpty { newExpanded = true }
         }
@@ -376,8 +382,8 @@ struct InboxView: View {
     private func markNewSeen(_ records: [TransactionRecord]) {
         records.forEach { $0.newImportDismissed = true }
         selected.subtract(records.map(\.id))
-        // Reveal the destination months; "seen" never changes review or approval state.
-        collapsedMonths.removeAll()
+        // Reveal the destination groups; "seen" never changes review or approval state.
+        collapsedGroups.removeAll()
         do { try modelContext.save() }
         catch {
             records.forEach { $0.newImportDismissed = false }

@@ -52,8 +52,50 @@ struct InboxMonth: Identifiable {
     }
 }
 
-struct InboxMonthHeader: View {
-    let month: InboxMonth
+enum InboxGrouping: String, CaseIterable, Identifiable {
+    case month, year, account
+    var id: String { rawValue }
+    var title: String {
+        switch self { case .month: "Month"; case .year: "Year"; case .account: "Card / account" }
+    }
+    var sectionTitle: String {
+        switch self { case .month: "Monthly"; case .year: "Yearly"; case .account: "By card / account" }
+    }
+}
+
+struct InboxHistoryGroup: Identifiable {
+    let id: String
+    let title: String
+    let transactions: [TransactionRecord]
+    var reviewCount: Int { transactions.filter { $0.state == .needsReview }.count }
+    var pendingCount: Int { transactions.filter { $0.state == .pending }.count }
+    var postedTotals: [(currency: String, amount: Decimal)] {
+        InboxMonth(id: .distantPast, transactions: transactions).postedTotals
+    }
+
+    static func group(_ records: [TransactionRecord], by grouping: InboxGrouping, sort: InboxSort) -> [InboxHistoryGroup] {
+        let records = InboxArrivalGroups.monthlyTransactions(in: records).filter { !$0.isCredit && $0.amountMinor > 0 }
+        var ordering = InboxFilters()
+        ordering.sort = sort
+        switch grouping {
+        case .month:
+            return InboxMonth.group(records, sort: sort).map {
+                InboxHistoryGroup(id: "month:\($0.id.timeIntervalSince1970)", title: $0.title, transactions: $0.transactions)
+            }
+        case .year:
+            return Dictionary(grouping: records) { InboxMonth.calendar.component(.year, from: $0.date) }
+                .sorted { sort == .oldest ? $0.key < $1.key : $0.key > $1.key }
+                .map { InboxHistoryGroup(id: "year:\($0.key)", title: String($0.key), transactions: ordering.ordered($0.value)) }
+        case .account:
+            return Dictionary(grouping: records, by: \.accountColorKey)
+                .map { InboxHistoryGroup(id: "account:\($0.key)", title: $0.value.first!.cardLabel, transactions: ordering.ordered($0.value)) }
+                .sorted { $0.title == $1.title ? $0.id < $1.id : $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }
+    }
+}
+
+struct InboxGroupHeader: View {
+    let group: InboxHistoryGroup
     let expanded: Bool
     let toggle: () -> Void
 
@@ -61,21 +103,21 @@ struct InboxMonthHeader: View {
         Button(action: toggle) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(month.title).font(.headline.weight(.bold)).foregroundStyle(.primary)
+                    Text(group.title).font(.headline.weight(.bold)).foregroundStyle(.primary)
                     Spacer(minLength: 8)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.bold)).foregroundStyle(.secondary)
                 }
-                Text("\(month.transactions.count) charges · \(month.reviewCount) to review")
+                Text("\(group.transactions.count) charges · \(group.reviewCount) to review")
                     .font(.caption).foregroundStyle(.secondary)
-                if !month.postedTotals.isEmpty {
+                if !group.postedTotals.isEmpty {
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .firstTextBaseline) { totals }
                         VStack(alignment: .leading, spacing: 4) { totals }
                     }
                 }
-                if month.pendingCount > 0 {
-                    Text("\(month.pendingCount) pending · not included in totals")
+                if group.pendingCount > 0 {
+                    Text("\(group.pendingCount) pending · not included in totals")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -84,14 +126,14 @@ struct InboxMonthHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(month.title), \(month.transactions.count) charges, \(month.reviewCount) to review")
-        .accessibilityValue("\(expanded ? "Expanded" : "Collapsed"). Posted charges: \(month.postedTotals.map { "\($0.amount.formatted(.currency(code: $0.currency))) \($0.currency)" }.joined(separator: ", ")). \(month.pendingCount) pending, excluded from totals.")
-        .accessibilityHint("Double tap to \(expanded ? "collapse" : "expand") this month.")
+        .accessibilityLabel("\(group.title), \(group.transactions.count) charges, \(group.reviewCount) to review")
+        .accessibilityValue("\(expanded ? "Expanded" : "Collapsed"). Posted charges: \(group.postedTotals.map { "\($0.amount.formatted(.currency(code: $0.currency))) \($0.currency)" }.joined(separator: ", ")). \(group.pendingCount) pending, excluded from totals.")
+        .accessibilityHint("Double tap to \(expanded ? "collapse" : "expand") this group.")
     }
 
     @ViewBuilder private var totals: some View {
         Text("Posted charges").font(.caption2).foregroundStyle(.secondary)
-        ForEach(month.postedTotals, id: \.currency) { total in
+        ForEach(group.postedTotals, id: \.currency) { total in
             Text("\(total.amount.formatted(.currency(code: total.currency))) \(total.currency)")
                 .font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(.primary)
         }
@@ -99,45 +141,31 @@ struct InboxMonthHeader: View {
 }
 
 struct InboxSummaryCard: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let transactions: [TransactionRecord]
     let filtering: Bool
     private var reviewCount: Int { transactions.filter { $0.state == .needsReview }.count }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                context
-                Spacer(minLength: 8)
-                reviewCountLabel
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                context
-                reviewCountLabel
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("Credits and refunds are excluded from Inbox.")
-    }
-
-    private var context: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(filtering ? "FILTERED INBOX" : "YOUR SPLIT INBOX")
+        VStack(alignment: .leading, spacing: 5) {
+            Text(filtering ? "FILTERED INBOX" : "INBOX")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            Text("\(transactions.count) charges").font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Label("\(transactions.count) charges", systemImage: "tray")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color(.secondarySystemGroupedBackground), in: .capsule)
+                    Label("\(reviewCount) to review", systemImage: "checklist")
+                        .font(.caption.weight(.medium)).foregroundStyle(.indigo)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color(.secondarySystemGroupedBackground), in: .capsule)
+                }.fixedSize(horizontal: true, vertical: false).padding(.horizontal, 20)
+            }
         }
-    }
-
-    private var reviewCountLabel: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Text(reviewCount.formatted()).font(.system(.title2, design: .rounded, weight: .bold))
-            Text("to review").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-        }
-        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
+        .padding(.top, 4).padding(.bottom, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityHint("Credits and refunds are excluded from Inbox.")
     }
 }
 

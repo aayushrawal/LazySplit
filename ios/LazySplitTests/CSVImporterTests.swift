@@ -4,6 +4,39 @@ import SwiftData
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testHistoryGroupingByMonthYearAndAccountKeepsNewSeparate() {
+        let august = record(amount: 1000), july = record(amount: 2000), priorYear = record(amount: 3000)
+        august.date = InboxMonth.calendar.date(from: DateComponents(year: 2026, month: 8, day: 1))!
+        july.date = InboxMonth.calendar.date(from: DateComponents(year: 2026, month: 7, day: 1))!
+        priorYear.date = InboxMonth.calendar.date(from: DateComponents(year: 2025, month: 8, day: 1))!
+        let firstAccount = UUID(), secondAccount = UUID()
+        august.accountID = firstAccount; july.accountID = firstAccount; priorYear.accountID = secondAccount
+        [august, july, priorYear].forEach { $0.newImportDismissed = true }
+        let newArrival = record(), refund = record()
+        refund.isCredit = true
+        let input = [august, july, priorYear, newArrival, refund]
+        let months = InboxHistoryGroup.group(input, by: .month, sort: .newest)
+        XCTAssertEqual(months.count, 3)
+        XCTAssertEqual(months.first?.transactions.first?.id, august.id)
+        let years = InboxHistoryGroup.group(input, by: .year, sort: .newest)
+        XCTAssertEqual(years.map(\.title), ["2026", "2025"])
+        XCTAssertEqual(years.first?.transactions.count, 2)
+        XCTAssertEqual(years.first?.postedTotals.first?.amount, 30)
+        XCTAssertEqual(InboxHistoryGroup.group(input, by: .year, sort: .oldest).map(\.title), ["2025", "2026"])
+        let cards = InboxHistoryGroup.group(input, by: .account, sort: .largest)
+        XCTAssertEqual(cards.count, 2) // Identical labels must not merge distinct server accounts.
+        XCTAssertNotEqual(cards[0].id, cards[1].id)
+        let firstCard = cards.first { $0.transactions.contains { $0.id == august.id } }!
+        XCTAssertEqual(firstCard.transactions.map(\.id), [july.id, august.id])
+        august.accountName = "Renamed card"; july.accountName = "Renamed card"
+        XCTAssertTrue(InboxHistoryGroup.group(input, by: .account, sort: .newest).contains { $0.id == firstCard.id && $0.title.contains("Renamed card") })
+        for mode in InboxGrouping.allCases {
+            let ids = InboxHistoryGroup.group(input, by: mode, sort: .newest).flatMap { $0.transactions.map(\.id) }
+            XCTAssertEqual(Set(ids), Set([august.id, july.id, priorYear.id]))
+            XCTAssertEqual(ids.count, 3)
+        }
+    }
+
     func testNewImportsAreSeparateFromMonthlyRegardlessOfPurchaseDate() {
         let historical = record()
         historical.date = Date(timeIntervalSince1970: 1_600_000_000)
@@ -90,7 +123,13 @@ final class CSVImporterTests: XCTestCase {
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
         defer { window.isHidden = true; previousWindow?.makeKeyAndVisible() }
-        for (name, scheme, size) in [("light", ColorScheme.light, DynamicTypeSize.large), ("dark", .dark, .large), ("accessibility", .light, .accessibility3)] {
+        let previousGrouping = UserDefaults.standard.string(forKey: "inbox.historyGrouping")
+        defer {
+            if let previousGrouping { UserDefaults.standard.set(previousGrouping, forKey: "inbox.historyGrouping") }
+            else { UserDefaults.standard.removeObject(forKey: "inbox.historyGrouping") }
+        }
+        for (name, scheme, size, grouping) in [("light", ColorScheme.light, DynamicTypeSize.large, InboxGrouping.month), ("dark", .dark, .large, .month), ("accessibility", .light, .accessibility3, .month), ("year", .light, .large, .year), ("account", .light, .large, .account)] {
+            UserDefaults.standard.set(grouping.rawValue, forKey: "inbox.historyGrouping")
             let content = NavigationStack { InboxView() }
                 .environment(session).modelContainer(container)
                 .environment(\.colorScheme, scheme).environment(\.dynamicTypeSize, size)
