@@ -365,6 +365,9 @@ private struct PlaidConnectRow: View {
     @State private var linkToken: String?
     @State private var loading = false
     @State private var hostedAuthSession: ASWebAuthenticationSession?
+    @State private var hostedLink: HostedPlaidLink?
+    @State private var showingHostedConnection = false
+    @State private var activeHostedSessionID: UUID?
     @State private var hostedPresentationContext = PlaidHostedLinkPresentationContext()
     #if canImport(LinkKit)
     @State private var linkSession: PlaidLinkSession?
@@ -373,9 +376,53 @@ private struct PlaidConnectRow: View {
 
     var body: some View {
         Button { Task { await connect() } } label: { Label(loading ? "Preparing secure connection…" : "Connect cards with Plaid", systemImage: "building.columns") }
-            .disabled(loading || session.isDemoMode)
+            .disabled(loading || session.isDemoMode || showingHostedConnection)
+            .sheet(isPresented: $showingHostedConnection, onDismiss: closeHostedConnection) {
+                NavigationStack {
+                    VStack(spacing: 20) {
+                        Image(systemName: "building.columns").font(.largeTitle).foregroundStyle(.teal)
+                        Text("Connect your account").font(.title2.bold())
+                        Text("Complete the secure Plaid page. Use Cancel on that page, or close this panel, to return to LazySplit.")
+                            .multilineTextAlignment(.center).foregroundStyle(.secondary)
+                        Button("Back to LazySplit") { closeHostedConnection() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .padding()
+                    .navigationTitle("Connect account")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button { closeHostedConnection() } label: {
+                                Image(systemName: "xmark").frame(minWidth: 44, minHeight: 44)
+                            }
+                            .accessibilityLabel("Close account connection")
+                        }
+                    }
+                    .task {
+                        if let hostedLink, activeHostedSessionID == nil { startHostedLink(hostedLink) }
+                    }
+                }
+            }
         #if canImport(LinkKit)
-            .sheet(isPresented: $showingLink) { linkSession?.sheet() }
+            .sheet(isPresented: $showingLink, onDismiss: { linkSession = nil }) {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Connect account").font(.headline)
+                        Spacer()
+                        Button {
+                            showingLink = false
+                            message = "Connection page closed."
+                        } label: {
+                            Image(systemName: "xmark").frame(minWidth: 44, minHeight: 44)
+                        }
+                        .accessibilityLabel("Close account connection")
+                    }
+                    .padding(.horizontal)
+                    Divider()
+                    if let linkSession { linkSession.sheet() }
+                    else { Spacer(); Text("Connection page unavailable.").foregroundStyle(.secondary); Spacer() }
+                }
+            }
         #endif
     }
 
@@ -383,8 +430,8 @@ private struct PlaidConnectRow: View {
         loading = true; defer { loading = false }
         do {
             #if DEBUG
-            let hostedLink = try await session.api.createPlaidHostedLink()
-            startHostedLink(hostedLink)
+            hostedLink = try await session.api.createPlaidHostedLink()
+            showingHostedConnection = true
             #else
             let token = try await session.api.createPlaidLinkToken(); linkToken = token
             #if canImport(LinkKit)
@@ -413,11 +460,15 @@ private struct PlaidConnectRow: View {
     }
 
     @MainActor private func startHostedLink(_ hostedLink: HostedPlaidLink) {
+        activeHostedSessionID = hostedLink.sessionID
         let authSession = ASWebAuthenticationSession(url: hostedLink.url, callbackURLScheme: "lazysplit") { callbackURL, error in
             Task { @MainActor in
+                guard activeHostedSessionID == hostedLink.sessionID else { return }
+                activeHostedSessionID = nil
                 hostedAuthSession = nil
+                showingHostedConnection = false
                 if let authError = error as? ASWebAuthenticationSessionError, authError.code == .canceledLogin {
-                    message = "Plaid connection canceled."
+                    await checkClosedHostedConnection(sessionID: hostedLink.sessionID)
                     return
                 }
                 guard error == nil, callbackURL?.scheme == "lazysplit" else {
@@ -430,8 +481,37 @@ private struct PlaidConnectRow: View {
         authSession.presentationContextProvider = hostedPresentationContext
         hostedAuthSession = authSession
         if !authSession.start() {
+            activeHostedSessionID = nil
             hostedAuthSession = nil
+            showingHostedConnection = false
             message = "Could not open Plaid's secure connection page."
+        }
+    }
+
+    @MainActor private func closeHostedConnection() {
+        let sessionID = activeHostedSessionID
+        activeHostedSessionID = nil
+        hostedAuthSession?.cancel()
+        hostedAuthSession = nil
+        showingHostedConnection = false
+        hostedLink = nil
+        if let sessionID {
+            Task { await checkClosedHostedConnection(sessionID: sessionID) }
+        }
+    }
+
+    @MainActor private func checkClosedHostedConnection(sessionID: UUID) async {
+        message = "Connection page closed. Checking whether Plaid finished…"
+        do {
+            let status = try await session.api.completePlaidHostedLink(sessionID: sessionID)
+            if status.state == "connected" {
+                message = "Bank connection completed. Historical sync has started."
+                onConnected()
+            } else {
+                message = "Connection page closed. If you completed Plaid, refresh Accounts shortly to check the result."
+            }
+        } catch {
+            message = "Connection page closed. Could not check its status; refresh Accounts when you’re online."
         }
     }
 
