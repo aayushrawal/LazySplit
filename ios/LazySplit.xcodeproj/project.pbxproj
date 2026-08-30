@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000011 /* PDFStatementImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* PDFStatementImporter.swift */; };
 		A10000000000000000000010 /* InboxComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* InboxComponents.swift */; };
 		A1000000000000000000000F /* InboxFilters.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* InboxFilters.swift */; };
 		A10000000000000000000001 /* LazySplitApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* LazySplitApp.swift */; };
@@ -47,6 +48,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A20000000000000000000011 /* PDFStatementImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFStatementImporter.swift; sourceTree = "<group>"; };
 		A20000000000000000000010 /* InboxComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxComponents.swift; sourceTree = "<group>"; };
 		A2000000000000000000000F /* InboxFilters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxFilters.swift; sourceTree = "<group>"; };
 		A20000000000000000000001 /* LazySplitApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LazySplitApp.swift; sourceTree = "<group>"; };
@@ -103,6 +105,7 @@
 				A20000000000000000000001 /* LazySplitApp.swift */,
 				A20000000000000000000002 /* Models.swift */,
 				A20000000000000000000003 /* Services.swift */,
+				A20000000000000000000011 /* PDFStatementImporter.swift */,
 				A20000000000000000000004 /* RootView.swift */,
 				A2000000000000000000000F /* InboxFilters.swift */,
 				A20000000000000000000010 /* InboxComponents.swift */,
@@ -244,6 +247,7 @@
 				A10000000000000000000001 /* LazySplitApp.swift in Sources */,
 				A10000000000000000000002 /* Models.swift in Sources */,
 				A10000000000000000000003 /* Services.swift in Sources */,
+				A10000000000000000000011 /* PDFStatementImporter.swift in Sources */,
 				A10000000000000000000004 /* RootView.swift in Sources */,
 				A1000000000000000000000F /* InboxFilters.swift in Sources */,
 				A10000000000000000000010 /* InboxComponents.swift in Sources */,

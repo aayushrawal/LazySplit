@@ -258,7 +258,7 @@ enum CSVImporter {
         var seen = knownFingerprints
         var duplicates = 0
         let receivedAt = Date.now
-        let dateParsers = ["MM/dd/yyyy", "MM/dd/yy", "yyyy-MM-dd", "M/d/yyyy"].map { format -> DateFormatter in let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = format; return f }
+        let dateParsers = ["MM/dd/yyyy", "MM/dd/yy", "yyyy-MM-dd", "M/d/yyyy"].map { format -> DateFormatter in let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = .gmt; f.isLenient = false; f.dateFormat = format; return f }
         let records = matrix.dropFirst().compactMap { values -> TransactionRecord? in
             let row = Dictionary(uniqueKeysWithValues: preview.headers.enumerated().map { ($0.element, values.indices.contains($0.offset) ? values[$0.offset] : "") })
             guard let rawDate = row[mapping.dateColumn], let date = dateParsers.lazy.compactMap({ $0.date(from: rawDate.trimmingCharacters(in: .whitespaces)) }).first else { return nil }
@@ -282,7 +282,7 @@ enum CSVImporter {
             record.inboxReceivedAt = receivedAt
             return record
         }
-        guard !records.isEmpty else { throw CSVImportError.invalidRows }
+        guard !records.isEmpty || duplicates > 0 else { throw CSVImportError.invalidRows }
         return (records, duplicates)
     }
 

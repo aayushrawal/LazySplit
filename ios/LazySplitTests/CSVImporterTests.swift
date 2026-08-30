@@ -1,9 +1,109 @@
 import XCTest
 import SwiftUI
 import SwiftData
+import PDFKit
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testPDFRowsCreditsAndUnsupportedBalanceColumns() throws {
+        let preview = PDFStatementImporter.parse(pages: ["""
+        Statement closing date 01/15/2026
+        Previous balance $9,999.00
+        12/28 12/29 Coffee Shop $12.34
+        01/02/2026 Flight, \"Window Seat\" 1,234.56
+        01/03 Returned Shoes 24.00 CR
+        01/04 Payment Thank You -100.00
+        01/05 Store return (15.20)
+        01/06 Groceries 42.30 899.00
+        01/07 MISSING AMOUNT
+        01/08 Total purchases 1,200.00
+        """, "Legal terms and conditions"])
+        XCTAssertEqual(preview.rows.count, 5)
+        XCTAssertEqual(preview.rows.map(\.isCredit), [false, false, true, true, true])
+        XCTAssertEqual(preview.rows[1].amountText, "1234.56")
+        XCTAssertEqual(preview.unmatchedDatedLines, 3)
+        XCTAssertEqual(preview.pagesWithoutRows, 1)
+        let closing = ISO8601DateFormatter().date(from: "2026-01-15T00:00:00Z")!
+        let csv = try PDFStatementImporter.reviewedCSV(rows: preview.rows, endingOn: closing, currency: "USD")
+        let mapping = try CSVImporter.preview(data: csv).suggestedMapping
+        let (records, duplicates) = try CSVImporter.transactions(data: csv, mapping: mapping, fallbackAccount: "Test card", knownFingerprints: [])
+        XCTAssertEqual(records.count, 5); XCTAssertEqual(duplicates, 0)
+        XCTAssertEqual(records[1].merchant, "Flight, \"Window Seat\"")
+        XCTAssertEqual(records[1].amountMinor, 123456)
+        XCTAssertEqual(records.map(\.isCredit), [false, false, true, true, true])
+        XCTAssertEqual(records[0].date, ISO8601DateFormatter().date(from: "2025-12-28T00:00:00Z"))
+        let repeated = try CSVImporter.transactions(data: csv, mapping: mapping, fallbackAccount: "Test card", knownFingerprints: Set(records.map(\.fingerprint)))
+        XCTAssertTrue(repeated.0.isEmpty)
+        XCTAssertEqual(repeated.1, 5)
+    }
+
+    func testPDFDateAndAmountValidation() throws {
+        let closing = ISO8601DateFormatter().date(from: "2026-01-15T00:00:00Z")!
+        XCTAssertNil(PDFStatementImporter.date("02/30/2026", endingOn: closing))
+        XCTAssertNil(PDFStatementImporter.date("31/12/2025", endingOn: closing))
+        XCTAssertEqual(PDFStatementImporter.date("2025-12-31", endingOn: closing), PDFStatementImporter.date("12/31/25", endingOn: closing))
+        XCTAssertEqual(PDFStatementImporter.minorUnits("12.30"), 1230)
+        for invalid in ["12.345", "1,23", "-10", "0", "nan", "10abc", "999999999"] { XCTAssertNil(PDFStatementImporter.minorUnits(invalid)) }
+        var rows = PDFStatementImporter.parse(pages: ["01/02 Coffee 12.30\n01/03 Shop 20.00"]).rows
+        rows[0].included = false
+        rows[1].amountText = "bad"
+        XCTAssertThrowsError(try PDFStatementImporter.reviewedCSV(rows: rows, endingOn: closing, currency: "USD"))
+        rows[1].amountText = "18.25"; rows[1].merchant = "Corrected merchant"
+        let csv = try PDFStatementImporter.reviewedCSV(rows: rows, endingOn: closing, currency: "USD")
+        let parsed = try CSVImporter.preview(data: csv)
+        XCTAssertEqual(parsed.rows.count, 1)
+        XCTAssertEqual(parsed.rows[0]["Description"], "Corrected merchant")
+        XCTAssertEqual(parsed.rows[0]["Amount"], "18.25")
+    }
+
+    @MainActor func testPDFExtractionFromDigitalAndScannedStatements() throws {
+        // Synthetic fixtures stay in memory; no real statement or account data is used.
+        let bounds = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let digital = UIGraphicsPDFRenderer(bounds: bounds).pdfData { context in
+            context.beginPage()
+            ("TEST STATEMENT\n12/07 Coffee Shop 12.34\n12/08 Grocery Store 56.78" as NSString)
+                .draw(in: bounds.insetBy(dx: 30, dy: 40), withAttributes: [.font: UIFont.monospacedSystemFont(ofSize: 18, weight: .regular)])
+        }
+        let extracted = try PDFStatementImporter.preview(data: digital)
+        XCTAssertEqual(extracted.rows.count, 2)
+        XCTAssertEqual(extracted.scannedPages, 0)
+        let image = UIGraphicsImageRenderer(bounds: bounds).image { context in
+            UIColor.white.setFill(); context.fill(bounds)
+            ("TEST STATEMENT\n12/07 Coffee Shop 12.34" as NSString).draw(in: bounds.insetBy(dx: 30, dy: 40), withAttributes: [.font: UIFont.monospacedSystemFont(ofSize: 22, weight: .regular), .foregroundColor: UIColor.black])
+        }
+        let scanned = PDFDocument(); scanned.insert(try XCTUnwrap(PDFPage(image: image)), at: 0)
+        let recognized = try PDFStatementImporter.preview(data: XCTUnwrap(scanned.dataRepresentation()))
+        XCTAssertEqual(recognized.scannedPages, 1)
+        XCTAssertEqual(recognized.rows.first?.amountText, "12.34")
+        XCTAssertThrowsError(try PDFStatementImporter.preview(data: Data("not a pdf".utf8)))
+        XCTAssertThrowsError(try PDFStatementImporter.preview(data: Data(count: PDFStatementImporter.maxBytes + 1)))
+        let locked = try XCTUnwrap(PDFDocument(data: digital)?.dataRepresentation(options: [PDFDocumentWriteOption.userPasswordOption: "test-password", PDFDocumentWriteOption.ownerPasswordOption: "test-owner"]))
+        XCTAssertThrowsError(try PDFStatementImporter.preview(data: locked)) { error in
+            XCTAssertEqual(error.localizedDescription, PDFStatementError.locked.localizedDescription)
+        }
+    }
+
+    @MainActor func testPDFImportReviewRendering() async throws {
+        let container = try ModelContainer(for: TransactionRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let session = AppSession(); session.isDemoMode = true
+        let sample = PDFStatementImporter.parse(pages: ["08/02/2026 Coffee Shop 12.34\n08/03/2026 Grocery Store 56.78\n08/04/2026 Shoe Refund 24.00 CR"])
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        for (name, scheme, size) in [("light", ColorScheme.light, DynamicTypeSize.large), ("dark", .dark, .large), ("large-text", .light, .accessibility3)] {
+            window.rootViewController = UIHostingController(rootView: NavigationStack { CSVImportView(pdf: sample) }
+                .environment(session).modelContainer(container).environment(\.colorScheme, scheme).environment(\.dynamicTypeSize, size))
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(500))
+            window.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let attachment = XCTAttachment(image: image); attachment.name = "pdf-import-\(name)"; attachment.lifetime = .keepAlways; add(attachment)
+            XCTAssertEqual(image.size.width, 393)
+        }
+    }
+
     @MainActor func testDemoFriendsStartEmptyAndResetWhenLeavingDemo() {
         let session = AppSession()
         XCTAssertTrue(session.demoFriends.isEmpty)

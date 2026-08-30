@@ -32,6 +32,14 @@ Without a configured API, the app can still launch in a clearly labelled demo mo
 
 ## Run the API
 
+### PDF and CSV statements
+
+In **Cards & Accounts → Import an older statement**, choose a CSV or PDF. PDFKit extracts digital text and Apple's on-device Vision text recognition handles pages without recognizable text rows. No raw PDF or page images leave the phone or are retained by LazySplit. Confirm the card name, statement closing date, and currency; expand extracted rows to correct dates/descriptions/amounts, mark payments/refunds, or exclude rows. Explicit review confirmation is required before import. Imported charges enter the review inbox and are never published automatically.
+
+PDF support is conservative: numeric `MM/DD`, `MM/DD/YYYY`, `MM/DD/YY`, or ISO dates followed by a description and one two-decimal amount on a line. Two leading transaction/posting dates are supported (the first date is used). Missing years use the user-confirmed statement closing date. Running-balance tables, wrapped transaction layouts, month-name dates, and other unsupported formats may require CSV. Unparsed dated lines/pages are reported, but this is not a guarantee of complete statement extraction—always compare with the original. Password-protected PDFs must be unlocked externally. Limits: 25 MB, 50 pages, and currencies with two decimal minor units (USD/CAD/EUR/GBP/AUD/INR/SGD/CHF).
+
+Reviewed PDF rows are normalized in memory through the existing CSV statement import contract and duplicate detection (stored as statement/`csv` records), so no backend migration is needed. The statement file is not stored; only the filename and normalized transaction records are retained. Statement-to-Plaid overlap matching still depends on existing fingerprints and is not guaranteed across issuer naming differences.
+
 ### Choose your friends
 
 The Friends tab starts empty, even after connecting Splitwise. Use **Add friends from Splitwise** to search and select people, then tap **Add**. Only explicitly added friends appear in LazySplit and the split editor; refreshing never adds anyone automatically. Swipe a friend to remove them from your LazySplit list without deleting their Splitwise friendship, nickname, existing groups, or past expenses. Groups with members outside your list cannot be used for a new split until those members are added again. The selection is saved per signed-in user on the backend; demo selections are separate and reset when leaving demo mode.

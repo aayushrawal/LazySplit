@@ -205,11 +205,52 @@ struct CSVImportView: View {
     @State private var mapping: CSVMapping?
     @State private var fallbackAccount = "Imported card"
     @State private var message: String?
+    @State private var pdfPreview: PDFStatementPreview?
+    @State private var pdfRows: [PDFStatementRow] = []
+    @State private var statementEnding = Date.now
+    @State private var statementCurrency = "USD"
+    @State private var reviewedPDF = false
+    @State private var loadingFile = false
+    @State private var importing = false
+
+    init(pdf: PDFStatementPreview? = nil) {
+        _pdfPreview = State(initialValue: pdf)
+        _pdfRows = State(initialValue: pdf?.rows ?? [])
+    }
 
     var body: some View {
         Form {
             Section {
-                Button { showingPicker = true } label: { Label(fileName.isEmpty ? "Choose CSV statement" : fileName, systemImage: "doc.text") }
+                Button { showingPicker = true } label: { Label(fileName.isEmpty ? "Choose CSV or PDF statement" : fileName, systemImage: "doc.text") }
+                    .disabled(loadingFile || importing)
+                if loadingFile { ProgressView("Reading statement…") }
+            } footer: { Text("PDFs are read on your iPhone, including scanned pages. The original file is not uploaded or saved by LazySplit.") }
+            if let pdfPreview {
+                Section("PDF statement details") {
+                    TextField("Account name", text: $fallbackAccount)
+                    DatePicker("Statement closing date", selection: $statementEnding, displayedComponents: .date)
+                        .environment(\.timeZone, .gmt)
+                    Picker("Currency", selection: $statementCurrency) {
+                        ForEach(["USD", "CAD", "EUR", "GBP", "AUD", "INR", "SGD", "CHF"], id: \.self) { Text($0).tag($0) }
+                    }
+                    Text("Dates use month/day order. The closing date supplies missing years, including December transactions on January statements. Verify it before importing.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Review extracted transactions") {
+                    Text("Found \(pdfRows.count) rows across \(pdfPreview.pageCount) pages. PDF extraction can miss rows or misread amounts—compare every selected row with your statement.")
+                    if pdfPreview.scannedPages > 0 { Label("\(pdfPreview.scannedPages) page(s) read with text recognition. Check digits carefully.", systemImage: "viewfinder").foregroundStyle(.orange) }
+                    if pdfPreview.unmatchedDatedLines > 0 || pdfPreview.pagesWithoutRows > 0 {
+                        Text("\(pdfPreview.unmatchedDatedLines) dated line(s) couldn't be parsed; \(pdfPreview.pagesWithoutRows) page(s) had no recognized transactions (these may be summary pages). Use CSV if transactions are missing.").foregroundStyle(.orange)
+                    }
+                    ForEach($pdfRows) { $row in
+                        PDFStatementRowEditor(row: $row, statementEnding: statementEnding)
+                    }
+                }
+                Section {
+                    Toggle("I checked the closing date, currency, amounts, and credits against the PDF", isOn: $reviewedPDF)
+                    Button("Import \(pdfRows.filter(\.included).count) selected transactions") { importPDF() }
+                        .disabled(!reviewedPDF || importing || pdfRows.filter(\.included).isEmpty || fallbackAccount.trimmingCharacters(in: .whitespaces).isEmpty)
+                } footer: { Text("Import only adds transactions for review. Nothing is published to Splitwise. Payments and refunds stay excluded from the inbox.") }
             }
             if let preview, let mapping {
                 Section("Column mapping") {
@@ -224,21 +265,54 @@ struct CSVImportView: View {
                     }
                 }
                 Section {
-                    Button("Import transactions") { importRows() }.frame(maxWidth: .infinity)
+                    Button("Import transactions") { importRows() }.frame(maxWidth: .infinity).disabled(importing)
                 }
             }
             if let message { Section { Text(message) } }
         }
         .navigationTitle("Import statement").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
-        .fileImporter(isPresented: $showingPicker, allowedContentTypes: [.commaSeparatedText, .plainText]) { result in
-            do {
-                let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw CSVImportError.unreadable }
-                defer { url.stopAccessingSecurityScopedResource() }
-                let loaded = try Data(contentsOf: url); let parsed = try CSVImporter.preview(data: loaded)
-                data = loaded; preview = parsed; mapping = parsed.suggestedMapping; fileName = url.lastPathComponent; message = nil
-            } catch { message = error.localizedDescription }
+        .onChange(of: statementEnding) { _, _ in reviewedPDF = false }
+        .onChange(of: statementCurrency) { _, _ in reviewedPDF = false }
+        .onChange(of: pdfRows) { _, _ in reviewedPDF = false }
+        .fileImporter(isPresented: $showingPicker, allowedContentTypes: [.commaSeparatedText, .plainText, .pdf]) { result in
+            switch result {
+            case .success(let url): Task { await loadFile(url) }
+            case .failure(let error): message = error.localizedDescription
+            }
         }
+    }
+
+    @MainActor private func loadFile(_ url: URL) async {
+        data = nil; preview = nil; mapping = nil; pdfPreview = nil; pdfRows = []; reviewedPDF = false; message = nil
+        loadingFile = true; defer { loadingFile = false }
+        fileName = url.lastPathComponent
+        do {
+            // Only immutable values cross the worker boundary. No PDF bytes are stored in SwiftData or sent to the API.
+            let loaded = try await Task.detached(priority: .userInitiated) {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= PDFStatementImporter.maxBytes else { throw PDFStatementError.tooLarge }
+                return try Data(contentsOf: url)
+            }.value
+            if url.pathExtension.lowercased() == "pdf" || loaded.starts(with: Data("%PDF-".utf8)) {
+                let parsed = try await Task.detached(priority: .userInitiated) { try PDFStatementImporter.preview(data: loaded) }.value
+                pdfPreview = parsed; pdfRows = parsed.rows
+            } else {
+                let parsed = try CSVImporter.preview(data: loaded)
+                data = loaded; preview = parsed; mapping = parsed.suggestedMapping
+            }
+        } catch { message = error.localizedDescription }
+    }
+
+    private func importPDF() {
+        guard reviewedPDF else { return }
+        do {
+            let normalized = try PDFStatementImporter.reviewedCSV(rows: pdfRows, endingOn: statementEnding, currency: statementCurrency)
+            data = normalized; mapping = try CSVImporter.preview(data: normalized).suggestedMapping
+            importRows()
+        } catch { message = error.localizedDescription }
     }
 
     private func binding(_ path: WritableKeyPath<CSVMapping, String>, _ fallback: CSVMapping) -> Binding<String> {
@@ -248,21 +322,49 @@ struct CSVImportView: View {
         Binding(get: { mapping?[keyPath: path] ?? fallback[keyPath: path] }, set: { mapping?[keyPath: path] = $0 })
     }
     private func importRows() {
-        guard let data, let mapping else { return }
+        guard !importing, let data, let mapping else { return }
         do {
-            let (records, duplicates) = try CSVImporter.transactions(data: data, mapping: mapping, fallbackAccount: fallbackAccount, knownFingerprints: Set(existing.map(\.fingerprint)))
+            let (records, duplicates) = try CSVImporter.transactions(data: data, mapping: mapping, fallbackAccount: fallbackAccount, knownFingerprints: Set(existing.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) }.map(\.fingerprint)))
+            records.forEach { $0.isDemo = session.isDemoMode }
             records.forEach(modelContext.insert)
             let key = UUID().uuidString
             modelContext.insert(ImportBatch(fileName: fileName, rowCount: records.count, duplicateCount: duplicates, issuerKey: fallbackAccount))
             try modelContext.save(); message = "Imported \(records.count) transactions and skipped \(duplicates) duplicates."
-            if KeychainStore.read("sessionToken") != nil {
+            self.data = nil; preview = nil; self.mapping = nil; pdfPreview = nil; pdfRows = []; reviewedPDF = false
+            if !session.isDemoMode, KeychainStore.read("sessionToken") != nil {
+                importing = true
                 let values = records.map { ImportedTransaction(id: $0.id, accountName: $0.accountName, accountMask: $0.accountMask, merchant: $0.merchant, originalDescription: $0.originalDescription, date: $0.date, amountMinor: $0.amountMinor, currencyCode: $0.currencyCode, fingerprint: $0.fingerprint, isCredit: $0.isCredit) }
                 Task {
+                    defer { importing = false }
                     do { let result = try await session.api.importTransactions(values, idempotencyKey: key); message = "Imported \(result.inserted) transactions and skipped \(duplicates + result.duplicates) duplicates." }
-                    catch { message = "Saved on this iPhone. Server sync will retry later: \(error.localizedDescription)" }
+                    catch { message = "Saved on this iPhone only. Server sync failed: \(error.localizedDescription)" }
                 }
             }
         } catch { message = error.localizedDescription }
+    }
+}
+
+private struct PDFStatementRowEditor: View {
+    @Binding var row: PDFStatementRow
+    let statementEnding: Date
+
+    var body: some View {
+        DisclosureGroup {
+            Text("Page \(row.page): \(row.originalLine)").font(.caption).foregroundStyle(.secondary)
+            TextField("Description", text: $row.merchant)
+            DatePicker("Transaction date", selection: Binding(get: { row.date(endingOn: statementEnding) ?? statementEnding }, set: { row.editedDate = $0 }), displayedComponents: .date)
+                .environment(\.timeZone, .gmt)
+            if row.date(endingOn: statementEnding) == nil { Text("Unrecognized date—choose the correct transaction date.").foregroundStyle(.red) }
+            TextField("Amount (positive)", text: $row.amountText).keyboardType(.decimalPad)
+            Toggle("Payment, refund, or credit", isOn: $row.isCredit)
+            Toggle("Include in import", isOn: $row.included)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(row.merchant).foregroundStyle(row.included ? .primary : .secondary)
+                Text("\(row.date(endingOn: statementEnding).map { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt)) } ?? row.rawDate) · \(row.amountText)\(row.isCredit ? " credit" : "")\(row.included ? "" : " · excluded")")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
