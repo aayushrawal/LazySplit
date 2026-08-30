@@ -47,6 +47,13 @@ final class TransactionRecord {
     var isCredit: Bool = false
     var reviewNeedsSync: Bool = false
     var reviewHasSynced: Bool = false
+    // Nil on migrated caches: existing history must not all become "New" after an update.
+    var inboxReceivedAt: Date?
+    var newImportDismissed: Bool = false
+
+    var isNewInInbox: Bool {
+        inboxReceivedAt != nil && !newImportDismissed && state == .needsReview && !isCredit && amountMinor > 0
+    }
 
     var canClassify: Bool { [.needsReview, .sharedDraft, .personal].contains(state) }
     var canSplit: Bool { !isCredit && [.needsReview, .sharedDraft].contains(state) }
@@ -83,6 +90,7 @@ final class TransactionRecord {
         self.category = category
         self.fingerprint = fingerprint ?? TransactionFingerprint.make(account: accountName + accountMask, date: date, amountMinor: amountMinor, merchant: merchant)
         self.updatedAt = .now
+        self.inboxReceivedAt = .now
         self.isDemo = isDemo
     }
 }

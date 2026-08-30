@@ -69,6 +69,7 @@ final class AppSession {
             guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == sessionToken else { return }
             let existing = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo }
             var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+            let receivedAt = Date.now
             for item in remote {
                 if let current = byID[item.id] {
                     current.externalID = item.externalID; current.sourceRaw = item.source.rawValue
@@ -78,6 +79,7 @@ final class AppSession {
                     // Refresh financial fields without discarding offline review decisions or drafts.
                     let unchanged = reviewVersions[current.id].map { $0.0 == current.updatedAt && !$0.1 } ?? false
                     if unchanged && !current.reviewNeedsSync && ([.pending, .needsReview, .personal, .sharedDraft].contains(current.state) || item.state == .published) {
+                        if current.state == .pending && item.state == .needsReview { current.inboxReceivedAt = receivedAt }
                         current.state = item.state
                     }
                     current.category = item.category; current.fingerprint = item.fingerprint
@@ -86,6 +88,7 @@ final class AppSession {
                     let record = TransactionRecord(id: item.id, externalID: item.externalID, source: item.source, accountName: item.accountName, accountMask: item.accountMask, merchant: item.merchant, originalDescription: item.originalDescription, date: item.date, amountMinor: item.amountMinor, currencyCode: item.currencyCode, state: item.state, category: item.category, fingerprint: item.fingerprint)
                     record.possibleDuplicateID = item.possibleDuplicateID
                     record.reviewHasSynced = true
+                    record.inboxReceivedAt = receivedAt
                     context.insert(record); byID[item.id] = record
                 }
                 if let current = byID[item.id] {

@@ -189,6 +189,7 @@ struct InboxView: View {
     @State private var undoActions: [(UUID, ReviewState)] = []
     @State private var lastAction = ""
     @State private var collapsedMonths = Set<Date>()
+    @State private var newExpanded = true
     @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
 
@@ -210,11 +211,13 @@ struct InboxView: View {
         allTransactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isCredit && $0.amountMinor > 0 }
     }
 
-    private var months: [InboxMonth] { InboxMonth.group(filtered, sort: filters.sort) }
+    private var newTransactions: [TransactionRecord] { InboxArrivalGroups.newTransactions(in: filtered) }
+    private var months: [InboxMonth] { InboxMonth.group(InboxArrivalGroups.monthlyTransactions(in: filtered), sort: filters.sort) }
 
     var body: some View {
         let colors = accountColors
         let monthGroups = months
+        let arrivals = newTransactions
         List(selection: $selected) {
             Section {
                 InboxSummaryCard(transactions: filtered, filtering: filters.activeCount > 0 || !search.isEmpty)
@@ -243,9 +246,50 @@ struct InboxView: View {
                 if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
                 if let error = session.transactionRefreshError { Text(error).foregroundStyle(.red) }
             }.listRowSeparator(.hidden)
-            if monthGroups.isEmpty {
+            Section {
+                HStack(spacing: 12) {
+                    Button {
+                        newExpanded.toggle()
+                        if !newExpanded { selected.subtract(arrivals.map(\.id)) }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "sparkle").foregroundStyle(.indigo)
+                            Text("New").font(.headline)
+                            Text(arrivals.count.formatted()).font(.caption.weight(.semibold))
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .background(.indigo.opacity(0.1), in: .capsule)
+                            Image(systemName: newExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }.frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("New, \(arrivals.count) newly imported charges")
+                    .accessibilityValue(newExpanded ? "Expanded" : "Collapsed")
+                    Spacer(minLength: 4)
+                    if !arrivals.isEmpty {
+                        Button("Mark seen") { markNewSeen(arrivals) }
+                            .font(.caption.weight(.semibold)).buttonStyle(.borderless)
+                            .accessibilityHint("Moves the \(arrivals.count) matching new charges into their monthly groups without changing their review status.")
+                    }
+                }
+                .listRowSeparator(.hidden)
+                if newExpanded {
+                    if arrivals.isEmpty {
+                        Text(filters.activeCount > 0 || !search.isEmpty ? "No new charges match these filters." : "Newly imported charges will appear here.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(arrivals) { transaction in transactionLink(transaction, colors: colors) }
+                    }
+                }
+            }
+            if filtered.isEmpty {
                 ContentUnavailableView("No matching charges", systemImage: "tray", description: Text("Try different filters or pull to refresh. Credits and refunds are not shown in Inbox."))
                     .listRowBackground(Color.clear)
+            }
+            if !monthGroups.isEmpty {
+                Text("Monthly").font(.headline).foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                    .accessibilityAddTraits(.isHeader)
             }
             ForEach(monthGroups) { month in
                 Section {
@@ -282,8 +326,11 @@ struct InboxView: View {
         .onChange(of: accountKeys, initial: true) { _, _ in
             if let data = try? JSONEncoder().encode(accountColors) { savedAccountColors = data }
         }
-        .onChange(of: search) { _, _ in collapsedMonths.removeAll(); selected.removeAll() }
-        .onChange(of: filters) { _, _ in collapsedMonths.removeAll(); selected.removeAll() }
+        .onChange(of: search) { _, _ in collapsedMonths.removeAll(); newExpanded = true; selected.removeAll() }
+        .onChange(of: filters) { _, _ in collapsedMonths.removeAll(); newExpanded = true; selected.removeAll() }
+        .onChange(of: arrivals.map(\.id)) { old, new in
+            if !Set(new).subtracting(old).isEmpty { newExpanded = true }
+        }
         .onChange(of: filters.excludePersonal) { _, hide in if hide && filters.state == .personal { filters.state = nil } }
         .searchable(text: $search, prompt: "Search charges")
         .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: visibleTransactions) }
@@ -323,6 +370,18 @@ struct InboxView: View {
             if transaction.canClassify && transaction.state != .personal {
                 Button { set(transaction, to: .personal) } label: { Label("Personal", systemImage: "person.fill") }.tint(.gray)
             }
+        }
+    }
+
+    private func markNewSeen(_ records: [TransactionRecord]) {
+        records.forEach { $0.newImportDismissed = true }
+        selected.subtract(records.map(\.id))
+        // Reveal the destination months; "seen" never changes review or approval state.
+        collapsedMonths.removeAll()
+        do { try modelContext.save() }
+        catch {
+            records.forEach { $0.newImportDismissed = false }
+            session.reviewSyncError = "Could not mark charges seen: \(error.localizedDescription)"
         }
     }
 

@@ -34,6 +34,8 @@ Without a configured API, the app can still launch in a clearly labelled demo mo
 
 ### Inbox review and filters
 
+**New** appears below the filter controls and above **Monthly**. It contains newly received posted charges that still need review, including historical purchases imported now. **Mark seen** moves the matching new charges to their monthly groups without changing review status or approving a split. Reviewing a new charge also moves it to Monthly; rows are never duplicated between sections. Arrival/seen tracking is saved on this device, existing caches remain monthly after upgrading, and refreshes do not mark previously seen records new again. Pending transactions enter New once posted. Search and filters apply to both sections; New is ordered by arrival batch, then purchase date.
+
 Inbox shows charges only: credits, refunds, and nonpositive amounts are excluded without deleting stored records. Personal charges remain visible by default. Mark a charge **Personal** using its swipe action, detail screen, or bulk selection to exclude it from splitting. Turn on **Filters → Hide personal transactions** only when you want to hide those entries; reset filters restores all charges. Single and bulk review actions support Undo, and offline review changes retry when refreshed.
 
 Transactions appear in inset, rounded monthly groups. Tap a month header to collapse or expand it, or use **View → Collapse all months / Expand all months**. Headers summarize the matching charges and remaining review count; posted-charge totals exclude pending items and remain separate by currency. Search and filter changes expand groups so matches are not concealed. Collapsing a month clears its selected transactions to prevent accidental bulk edits.

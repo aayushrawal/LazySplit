@@ -244,6 +244,7 @@ enum CSVImporter {
         let matrix = parse(text)
         var seen = knownFingerprints
         var duplicates = 0
+        let receivedAt = Date.now
         let dateParsers = ["MM/dd/yyyy", "MM/dd/yy", "yyyy-MM-dd", "M/d/yyyy"].map { format -> DateFormatter in let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = format; return f }
         let records = matrix.dropFirst().compactMap { values -> TransactionRecord? in
             let row = Dictionary(uniqueKeysWithValues: preview.headers.enumerated().map { ($0.element, values.indices.contains($0.offset) ? values[$0.offset] : "") })
@@ -265,6 +266,7 @@ enum CSVImporter {
             seen.insert(fingerprint)
             let record = TransactionRecord(source: .csv, accountName: account, merchant: merchant, originalDescription: merchant, date: date, amountMinor: minor, currencyCode: currency.uppercased(), fingerprint: fingerprint)
             record.isCredit = amount < 0
+            record.inboxReceivedAt = receivedAt
             return record
         }
         guard !records.isEmpty else { throw CSVImportError.invalidRows }

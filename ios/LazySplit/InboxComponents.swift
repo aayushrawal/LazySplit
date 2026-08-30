@@ -1,5 +1,18 @@
 import SwiftUI
 
+enum InboxArrivalGroups {
+    static func newTransactions(in records: [TransactionRecord]) -> [TransactionRecord] {
+        records.filter(\.isNewInInbox).sorted {
+            if $0.inboxReceivedAt != $1.inboxReceivedAt { return ($0.inboxReceivedAt ?? .distantPast) > ($1.inboxReceivedAt ?? .distantPast) }
+            return $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date > $1.date
+        }
+    }
+
+    static func monthlyTransactions(in records: [TransactionRecord]) -> [TransactionRecord] {
+        records.filter { !$0.isNewInInbox }
+    }
+}
+
 struct InboxMonth: Identifiable {
     let id: Date
     let transactions: [TransactionRecord]

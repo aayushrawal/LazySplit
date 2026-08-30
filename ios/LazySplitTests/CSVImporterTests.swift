@@ -4,6 +4,47 @@ import SwiftData
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testNewImportsAreSeparateFromMonthlyRegardlessOfPurchaseDate() {
+        let historical = record()
+        historical.date = Date(timeIntervalSince1970: 1_600_000_000)
+        let cached = record()
+        cached.inboxReceivedAt = nil
+        let seen = record()
+        seen.newImportDismissed = true
+        let personal = record(state: .personal)
+        let pending = record(state: .pending)
+        let refund = record()
+        refund.isCredit = true
+        let filtered = [historical, cached, seen, personal, pending, refund].filter { InboxFilters().matches($0) }
+        XCTAssertEqual(InboxArrivalGroups.newTransactions(in: filtered).map(\.id), [historical.id])
+        let monthly = InboxArrivalGroups.monthlyTransactions(in: filtered)
+        XCTAssertEqual(Set(monthly.map(\.id)), Set([cached.id, seen.id, personal.id, pending.id]))
+        XCTAssertEqual(monthly.count + InboxArrivalGroups.newTransactions(in: filtered).count, filtered.count)
+        historical.newImportDismissed = true
+        XCTAssertFalse(historical.isNewInInbox)
+        XCTAssertEqual(historical.state, .needsReview)
+        historical.newImportDismissed = false
+        historical.state = .sharedDraft
+        XCTAssertFalse(historical.isNewInInbox)
+        historical.state = .needsReview
+        XCTAssertTrue(historical.isNewInInbox)
+    }
+
+    @MainActor
+    func testSeenFlagSurvivesSavingAndRefreshingMetadata() throws {
+        let container = try ModelContainer(for: TransactionRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let record = record()
+        container.mainContext.insert(record)
+        record.newImportDismissed = true
+        try container.mainContext.save()
+        let context = ModelContext(container)
+        let loaded = try XCTUnwrap(context.fetch(FetchDescriptor<TransactionRecord>()).first)
+        XCTAssertNotNil(loaded.inboxReceivedAt)
+        XCTAssertTrue(loaded.newImportDismissed)
+        loaded.merchant = "Refreshed merchant"
+        XCTAssertFalse(loaded.isNewInInbox)
+    }
+
     @MainActor
     func testCompactInboxDimensionsAtStandardTextSize() {
         let transaction = record()
@@ -41,6 +82,7 @@ final class CSVImporterTests: XCTestCase {
         }
         let older = TransactionRecord(source: .plaid, accountName: "Sapphire Preferred", accountMask: "4242", merchant: "Mountain Cabin",
             date: Date(timeIntervalSince1970: 1782864000), amountMinor: 61200, isDemo: true)
+        older.inboxReceivedAt = nil
         container.mainContext.insert(older)
         try container.mainContext.save()
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
