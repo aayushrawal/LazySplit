@@ -26,7 +26,8 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       `SELECT t.id,t.external_id AS "externalID",t.source,COALESCE(a.nickname,a.name,'Account') AS "accountName",COALESCE(a.mask,'') AS "accountMask",
        t.merchant,COALESCE(t.original_description,'') AS "originalDescription",t.transaction_date AS date,
        t.amount_minor::integer AS "amountMinor",t.currency_code AS "currencyCode",t.review_state AS state,
-       t.raw_category AS category,t.fingerprint,t.possible_duplicate_id AS "possibleDuplicateID"
+       t.raw_category AS category,t.category_detail AS "categoryDetail",t.city,t.region,t.country,
+       t.payment_channel AS "paymentChannel",t.is_credit AS "isCredit",t.fingerprint,t.possible_duplicate_id AS "possibleDuplicateID"
        FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE ${where}
        ORDER BY t.transaction_date DESC,t.id DESC LIMIT $${values.length}`, values);
     return { transactions: result.rows, nextCursor: result.rows.length === query.limit ? result.rows.at(-1)!.id : null };
@@ -69,9 +70,15 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   app.patch("/v1/transactions/:id/review", { preHandler: requireUser }, async (request, reply) => {
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = z.object({ state: z.enum(["needsReview", "personal", "sharedDraft", "queued"]) }).parse(request.body);
-    const result = await pool.query("UPDATE transactions SET review_state=$1,updated_at=now() WHERE id=$2 AND user_id=$3 RETURNING id", [body.state, params.id, request.userID]);
-    if (!result.rowCount) return reply.code(404).send({ message: "Transaction not found." });
-    return {};
+    return transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [request.userID + params.id]);
+      const current = await client.query("SELECT pending FROM transactions WHERE id=$1 AND user_id=$2", [params.id, request.userID]);
+      if (!current.rowCount) return reply.code(404).send({ message: "Transaction not found." });
+      const published = await client.query("SELECT id FROM split_drafts WHERE transaction_id=$1 AND user_id=$2 AND state='published'", [params.id, request.userID]);
+      if (published.rowCount || current.rows[0].pending) return reply.code(409).send({ message: "Pending or published transactions cannot be reclassified." });
+      await client.query("UPDATE transactions SET review_state=$1,updated_at=now() WHERE id=$2 AND user_id=$3", [body.state, params.id, request.userID]);
+      return {};
+    });
   });
 
   app.get("/v1/coverage", { preHandler: requireUser }, async (request) => {

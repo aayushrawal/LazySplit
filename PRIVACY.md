@@ -10,6 +10,8 @@ LazySplit processes financial transaction metadata only to help the signed-in us
 - Friends do not create LazySplit accounts merely because they are included in an expense. Published expenses are governed by Splitwise's privacy terms.
 - Optional friend aliases, preferred ordering, and friend groups are stored in LazySplit for the signed-in user. They do not rename friends or create groups in Splitwise.
 - Optional card nicknames are stored in LazySplit and do not change account names at the bank or Plaid.
+- Transaction categories, payment channels, and merchant city/region/country supplied by Plaid are stored for inbox filtering. Missing categories may be suggested locally from merchant names. LazySplit does not collect phone GPS location for this feature.
+- Personal review decisions synchronize to LazySplit to prevent publishing those charges. They remain visible unless the user enables the personal-transaction visibility filter.
 - Authentication, financial, and provider-token fields are redacted from application logs.
 - A user may disconnect integrations or delete their LazySplit account and associated server-side data.
 

@@ -50,6 +50,8 @@ final class AppSession {
     var lastError: String?
     var isRefreshingTransactions = false
     var transactionRefreshError: String?
+    var reviewSyncError: String?
+    private var isSyncingReviews = false
     let api = APIClient()
 
     func refreshTransactions(in context: ModelContext) async {
@@ -59,6 +61,10 @@ final class AppSession {
         isRefreshingTransactions = true
         defer { isRefreshingTransactions = false }
         do {
+            await syncReviewDecisions(in: context)
+            // A swipe or Undo may finish syncing while this read is in flight.
+            let snapshots = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo }
+            let reviewVersions = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.id, ($0.updatedAt, $0.reviewNeedsSync)) })
             let remote = try await api.transactions()
             guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == sessionToken else { return }
             let existing = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo }
@@ -70,7 +76,8 @@ final class AppSession {
                     current.merchant = item.merchant; current.originalDescription = item.originalDescription
                     current.date = item.date; current.amountMinor = item.amountMinor; current.currencyCode = item.currencyCode
                     // Refresh financial fields without discarding offline review decisions or drafts.
-                    if current.state == .pending || current.state == .needsReview || item.state == .published {
+                    let unchanged = reviewVersions[current.id].map { $0.0 == current.updatedAt && !$0.1 } ?? false
+                    if unchanged && !current.reviewNeedsSync && ([.pending, .needsReview, .personal, .sharedDraft].contains(current.state) || item.state == .published) {
                         current.state = item.state
                     }
                     current.category = item.category; current.fingerprint = item.fingerprint
@@ -78,13 +85,44 @@ final class AppSession {
                 } else {
                     let record = TransactionRecord(id: item.id, externalID: item.externalID, source: item.source, accountName: item.accountName, accountMask: item.accountMask, merchant: item.merchant, originalDescription: item.originalDescription, date: item.date, amountMinor: item.amountMinor, currencyCode: item.currencyCode, state: item.state, category: item.category, fingerprint: item.fingerprint)
                     record.possibleDuplicateID = item.possibleDuplicateID
+                    record.reviewHasSynced = true
                     context.insert(record); byID[item.id] = record
+                }
+                if let current = byID[item.id] {
+                    current.categoryDetail = item.categoryDetail; current.city = item.city; current.region = item.region
+                    current.country = item.country; current.paymentChannel = item.paymentChannel; current.isCredit = item.isCredit ?? false
                 }
             }
             try context.save()
             transactionRefreshError = nil
         } catch {
             transactionRefreshError = "Could not refresh transactions: \(error.localizedDescription)"
+        }
+    }
+
+    func syncReviewDecisions(in context: ModelContext) async {
+        guard !isDemoMode, isAuthenticated, !isSyncingReviews else { return }
+        isSyncingReviews = true
+        defer { isSyncingReviews = false }
+        let token = KeychainStore.read("sessionToken")
+        do {
+            // Preserve personal/shared decisions made in versions that only saved them locally.
+            for record in try context.fetch(FetchDescriptor<TransactionRecord>()) where !record.isDemo && !record.reviewHasSynced && [.personal, .sharedDraft].contains(record.state) {
+                record.reviewNeedsSync = true
+            }
+            try context.save()
+            // Serialize changes; if Undo runs during a request, send its newer decision next.
+            while let record = try context.fetch(FetchDescriptor<TransactionRecord>()).first(where: { !$0.isDemo && $0.reviewNeedsSync }) {
+                guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == token else { return }
+                let state = record.state
+                try await api.setReview(id: record.id, state: state)
+                guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == token else { return }
+                if record.state == state { record.reviewNeedsSync = false; record.reviewHasSynced = true }
+                try context.save()
+            }
+            reviewSyncError = nil
+        } catch {
+            reviewSyncError = "Review changes are saved on this phone and will retry on refresh: \(error.localizedDescription)"
         }
     }
 

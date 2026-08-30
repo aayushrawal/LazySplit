@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS transactions (
   UNIQUE(user_id, source, external_id)
 );
 
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_detail text;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS city text;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS region text;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS country text;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payment_channel text;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_credit boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS splitwise_cache (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   splitwise_user jsonb NOT NULL DEFAULT '{}',

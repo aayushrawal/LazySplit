@@ -278,7 +278,10 @@ struct OutboxView: View {
         transactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) }
     }
     private var visibleAttempts: [ExportAttempt] {
-        attempts.filter { transaction(for: $0) != nil }
+        attempts.filter { attempt in
+            guard let transaction = transaction(for: attempt) else { return false }
+            return transaction.state != .personal && !transaction.isCredit
+        }
     }
 
     var body: some View {
@@ -309,8 +312,10 @@ struct OutboxView: View {
     }
     private func publishAll() async {
         publishing = true; defer { publishing = false }
+        await session.syncReviewDecisions(in: modelContext)
         for attempt in visibleAttempts.filter({ $0.status == "queued" || $0.status == "failed" }) {
             guard let draft = drafts.first(where: { $0.id == attempt.draftID }), let transaction = visibleTransactions.first(where: { $0.id == draft.transactionID }) else { continue }
+            guard transaction.state != .personal, transaction.state != .pending, !transaction.isCredit, !transaction.reviewNeedsSync else { continue }
             let body = PublishBody(draftID: draft.id, transactionID: transaction.id, merchant: transaction.merchant, date: transaction.date, amountMinor: transaction.amountMinor, currencyCode: transaction.currencyCode, groupID: draft.splitwiseGroupID, participants: draft.participants.map { PublishParticipant(userID: $0.splitwiseUserID, owedMinor: $0.owedMinor, paidMinor: $0.paidMinor) })
             attempt.status = "publishing"; try? modelContext.save()
             do {

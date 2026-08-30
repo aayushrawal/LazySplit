@@ -38,6 +38,22 @@ final class TransactionRecord {
     var possibleDuplicateID: UUID?
     var updatedAt: Date
     var isDemo: Bool = false
+    var categoryDetail: String?
+    var city: String?
+    var region: String?
+    var country: String?
+    var paymentChannel: String?
+    var isCredit: Bool = false
+    var reviewNeedsSync: Bool = false
+    var reviewHasSynced: Bool = false
+
+    var canClassify: Bool { [.needsReview, .sharedDraft, .personal].contains(state) }
+    var canSplit: Bool { !isCredit && [.needsReview, .sharedDraft].contains(state) }
+    var locationLabel: String {
+        let parts = [city, region, country].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return parts.isEmpty ? "Unknown location" : parts.joined(separator: ", ")
+    }
+    var cardLabel: String { accountMask.isEmpty ? accountName : "\(accountName) • \(accountMask)" }
 
     var source: TransactionSource { TransactionSource(rawValue: sourceRaw) ?? .csv }
     var state: ReviewState {

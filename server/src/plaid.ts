@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { decodeProtectedHeader, importJWK, jwtVerify, type JWK } from "jose";
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import { config } from "./config.js";
 import { decryptToken, encryptToken, hash } from "./crypto.js";
@@ -15,6 +16,8 @@ type PlaidTransaction = {
   date: string; merchant_name: string | null; name: string; original_description?: string | null;
   pending: boolean; pending_transaction_id?: string | null;
   personal_finance_category?: { primary: string; detailed: string } | null;
+  location?: { city?: string | null; region?: string | null; country?: string | null } | null;
+  payment_channel?: string | null;
 };
 type SyncResponse = { added: PlaidTransaction[]; modified: PlaidTransaction[]; removed: { transaction_id: string }[]; next_cursor: string; has_more: boolean; error_code?: string };
 type HostedLinkStatus = { state: "pending" | "processing" | "connected" | "exited" | "failed"; connected_count: number; error_message: string | null };
@@ -224,12 +227,12 @@ async function hydrateAccounts(userID: string, connectionID: string, accessToken
   }
 }
 
-export async function syncConnection(connectionID: string): Promise<void> {
+export async function syncConnection(connectionID: string, replayMetadata = false): Promise<void> {
   const connectionResult = await pool.query<{ id: string; user_id: string; encrypted_token: string; sync_cursor: string | null }>(
     "SELECT id, user_id, encrypted_token, sync_cursor FROM provider_connections WHERE id = $1 AND status = 'active'", [connectionID]);
   const connection = connectionResult.rows[0];
   if (!connection) return;
-  const accessToken = decryptToken(connection.encrypted_token), originalCursor = connection.sync_cursor;
+  const accessToken = decryptToken(connection.encrypted_token), originalCursor = replayMetadata ? null : connection.sync_cursor;
   for (let restart = 0; restart < 3; restart++) {
     let cursor = originalCursor ?? undefined;
     const pages: SyncResponse[] = [];
@@ -271,6 +274,7 @@ async function applyPages(connection: { id: string; user_id: string }, pages: Sy
              fingerprint=$7,raw_category=$8,updated_at=now() WHERE id=$9`,
             [accountRow.id, item.transaction_id, merchant, item.original_description ?? item.name, item.iso_currency_code ?? "USD",
              item.pending, fingerprint, item.personal_finance_category?.primary ?? null, importedMatch.rows[0].id]);
+          await updateTransactionMetadata(client, connection.user_id, item);
           continue;
         }
         await client.query(
@@ -278,9 +282,11 @@ async function applyPages(connection: { id: string; user_id: string }, pages: Sy
            VALUES ($1,$2,$3,'plaid',$4,$5,$6,$7,$8,$9,$10,$11,$12)
            ON CONFLICT (user_id, source, external_id) DO UPDATE SET merchant=EXCLUDED.merchant, original_description=EXCLUDED.original_description,
              transaction_date=EXCLUDED.transaction_date, amount_minor=EXCLUDED.amount_minor, currency_code=EXCLUDED.currency_code,
-             pending=EXCLUDED.pending, fingerprint=EXCLUDED.fingerprint, raw_category=EXCLUDED.raw_category, updated_at=now()`,
+             pending=EXCLUDED.pending, fingerprint=EXCLUDED.fingerprint, raw_category=EXCLUDED.raw_category,
+             review_state=CASE WHEN transactions.review_state='pending' AND NOT EXCLUDED.pending THEN 'needsReview' ELSE transactions.review_state END, updated_at=now()`,
           [connection.user_id, accountRow.id, item.transaction_id, merchant, item.original_description ?? item.name, item.date, minor,
            item.iso_currency_code ?? "USD", item.pending, item.pending ? "pending" : "needsReview", fingerprint, item.personal_finance_category?.primary ?? null]);
+        await updateTransactionMetadata(client, connection.user_id, item);
       }
     }
     await client.query("UPDATE provider_connections SET sync_cursor=$1, updated_at=now() WHERE id=$2", [cursor, connection.id]);
@@ -288,3 +294,11 @@ async function applyPages(connection: { id: string; user_id: string }, pages: Sy
 }
 
 function normalize(value: string): string { return value.normalize("NFKD").replace(/[^a-zA-Z0-9]/g, "").toLowerCase(); }
+
+async function updateTransactionMetadata(client: PoolClient, userID: string, item: PlaidTransaction): Promise<void> {
+  await client.query(
+    `UPDATE transactions SET category_detail=$1,city=$2,region=$3,country=$4,payment_channel=$5,is_credit=$6
+     WHERE user_id=$7 AND source='plaid' AND external_id=$8`,
+    [item.personal_finance_category?.detailed ?? null, item.location?.city ?? null, item.location?.region ?? null,
+     item.location?.country ?? null, item.payment_channel ?? null, item.amount < 0, userID, item.transaction_id]);
+}

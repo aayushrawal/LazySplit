@@ -182,18 +182,15 @@ struct InboxView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Query(sort: \TransactionRecord.date, order: .reverse) private var allTransactions: [TransactionRecord]
-    @State private var stateFilter: ReviewState? = .needsReview
+    @State private var filters = InboxFilters()
+    @State private var showingFilters = false
     @State private var search = ""
-    @State private var accountFilter: String?
     @State private var selected = Set<UUID>()
-    @State private var undoAction: (UUID, ReviewState)?
+    @State private var undoActions: [(UUID, ReviewState)] = []
+    @State private var lastAction = ""
 
     private var filtered: [TransactionRecord] {
-        visibleTransactions.filter { transaction in
-            (stateFilter == nil || transaction.state == stateFilter) &&
-            (accountFilter == nil || transaction.accountName == accountFilter) &&
-            (search.isEmpty || transaction.merchant.localizedCaseInsensitiveContains(search))
-        }
+        filters.ordered(visibleTransactions.filter { filters.matches($0, search: search) })
     }
 
     private var visibleTransactions: [TransactionRecord] {
@@ -203,21 +200,30 @@ struct InboxView: View {
     var body: some View {
         List(selection: $selected) {
             if session.isRefreshingTransactions { ProgressView("Loading transactions…") }
+            Text("\(filtered.count) matching transactions").font(.caption).foregroundStyle(.secondary)
+            if let error = filters.validationError { Text(error).foregroundStyle(.red) }
+            if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
             if let error = session.transactionRefreshError {
                 Text(error).foregroundStyle(.red)
             }
             if filtered.isEmpty {
-                ContentUnavailableView("You’re caught up", systemImage: "checkmark.circle", description: Text("Choose another filter or wait for the next card sync."))
+                ContentUnavailableView("No matching transactions", systemImage: "line.3.horizontal.decrease.circle", description: Text("Change your filters or pull to refresh. You can optionally hide personal transactions in Filters."))
                     .listRowBackground(Color.clear)
             }
             ForEach(filtered) { transaction in
                 NavigationLink { SplitEditorView(transaction: transaction) } label: { TransactionRow(transaction: transaction) }
                     .tag(transaction.id)
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        Button { set(transaction, to: .sharedDraft) } label: { Label("Shared", systemImage: "person.2.fill") }.tint(.indigo)
+                        if transaction.canClassify {
+                            Button { set(transaction, to: transaction.state == .personal ? .needsReview : .sharedDraft) } label: {
+                                Label(transaction.state == .personal ? "Return to review" : "Shared", systemImage: "person.2.fill")
+                            }.tint(.indigo)
+                        }
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button { set(transaction, to: .personal) } label: { Label("Personal", systemImage: "person.fill") }.tint(.gray)
+                        if transaction.canClassify && transaction.state != .personal {
+                            Button { set(transaction, to: .personal) } label: { Label("Personal", systemImage: "person.fill") }.tint(.gray)
+                        }
                     }
             }
         }
@@ -225,44 +231,57 @@ struct InboxView: View {
         .navigationTitle("Review")
         .refreshable { await session.refreshTransactions(in: modelContext) }
         .task { await session.refreshTransactions(in: modelContext) }
-        .searchable(text: $search, prompt: "Merchant")
+        .searchable(text: $search, prompt: "Merchant, description, category or location")
+        .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: visibleTransactions) }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Menu {
-                    Button("All statuses") { stateFilter = nil }
-                    ForEach(ReviewState.allCases) { state in Button(state.title) { stateFilter = state } }
-                    Divider()
-                    Button("All cards") { accountFilter = nil }
-                    ForEach(Array(Set(visibleTransactions.map(\.accountName))).sorted(), id: \.self) { account in Button(account) { accountFilter = account } }
-                } label: { Label("Filter", systemImage: "line.3.horizontal.decrease.circle") }
+                Button { showingFilters = true } label: { Label("Filters (\(filters.activeCount))", systemImage: "line.3.horizontal.decrease.circle") }
             }
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
             if !selected.isEmpty {
                 ToolbarItemGroup(placement: .bottomBar) {
                     Button("Personal") { bulkSet(.personal) }
                     Spacer()
-                    Button("Shared") { bulkSet(.sharedDraft) }
+                    Button("Return to review") { bulkSet(.needsReview) }
                 }
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if let undoAction {
-                HStack { Text("Marked \(ReviewState(rawValue: undoAction.1.rawValue)?.title.lowercased() ?? "")"); Spacer(); Button("Undo") { undo() } }
+            if !undoActions.isEmpty {
+                HStack { Text(lastAction); Spacer(); Button("Undo") { undo() } }
                     .padding().background(.regularMaterial).clipShape(.rect(cornerRadius: 14)).padding()
             }
         }
     }
 
     private func set(_ transaction: TransactionRecord, to state: ReviewState) {
-        undoAction = (transaction.id, transaction.state); transaction.state = state; try? modelContext.save()
+        apply([transaction], state: state)
     }
     private func undo() {
-        guard let undoAction, let transaction = allTransactions.first(where: { $0.id == undoAction.0 }) else { return }
-        transaction.state = undoAction.1; self.undoAction = nil; try? modelContext.save()
+        for (id, state) in undoActions {
+            if let transaction = allTransactions.first(where: { $0.id == id }), transaction.canClassify {
+                transaction.state = state; transaction.reviewNeedsSync = !session.isDemoMode
+            }
+        }
+        undoActions = []; persistReviews()
     }
     private func bulkSet(_ state: ReviewState) {
-        allTransactions.filter { selected.contains($0.id) }.forEach { $0.state = state }
-        selected.removeAll(); try? modelContext.save()
+        apply(filtered.filter { selected.contains($0.id) }, state: state)
+        selected.removeAll()
+    }
+    private func apply(_ records: [TransactionRecord], state: ReviewState) {
+        let editable = records.filter { $0.canClassify && $0.state != state }
+        guard !editable.isEmpty else { return }
+        undoActions = editable.map { ($0.id, $0.state) }
+        editable.forEach { $0.state = state; $0.reviewNeedsSync = !session.isDemoMode }
+        lastAction = "\(editable.count) marked \(state.title.lowercased())"
+        persistReviews()
+    }
+    private func persistReviews() {
+        do {
+            try modelContext.save()
+            Task { await session.syncReviewDecisions(in: modelContext) }
+        } catch { session.reviewSyncError = error.localizedDescription }
     }
 }
 
@@ -274,11 +293,14 @@ struct TransactionRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(transaction.merchant).font(.headline).lineLimit(1)
                 Text("\(transaction.accountName) • \(transaction.date.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary)
+                Text("\(TransactionClassification.category(for: transaction).name)\(TransactionClassification.category(for: transaction).inferred ? " (suggested)" : "") · \(transaction.locationLabel)")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
                 Text(transaction.amount, format: .currency(code: transaction.currencyCode)).font(.headline.monospacedDigit())
                 Text(transaction.state.title).font(.caption2).foregroundStyle(transaction.state == .failed ? .red : .secondary)
+                if transaction.isCredit { Text("Credit / refund").font(.caption2).foregroundStyle(.green) }
             }
         }.padding(.vertical, 5)
     }
@@ -314,6 +336,24 @@ struct SplitEditorView: View {
                 LabeledContent("Merchant", value: transaction.merchant)
                 LabeledContent("Total") { Text(transaction.amount, format: .currency(code: transaction.currencyCode)).fontWeight(.semibold) }
                 LabeledContent("Date", value: transaction.date.formatted(date: .long, time: .omitted))
+                LabeledContent("Category", value: TransactionClassification.category(for: transaction).name)
+                if TransactionClassification.category(for: transaction).inferred { Text("Suggested from the merchant name.").font(.caption).foregroundStyle(.secondary) }
+                if let detail = transaction.categoryDetail { LabeledContent("Detail", value: TransactionClassification.title(detail)) }
+                LabeledContent("Location", value: transaction.locationLabel)
+                LabeledContent("Channel", value: transaction.paymentChannel ?? "Unknown")
+            }
+            Section {
+                if transaction.canClassify {
+                    Button(transaction.state == .personal ? "Return to splitting review" : "Mark as personal — exclude from splitting") {
+                        transaction.state = transaction.state == .personal ? .needsReview : .personal
+                        transaction.reviewNeedsSync = !session.isDemoMode
+                        do { try modelContext.save(); Task { await session.syncReviewDecisions(in: modelContext) } }
+                        catch { session.reviewSyncError = error.localizedDescription }
+                    }
+                }
+                if transaction.state == .personal { Text("Personal transaction. It cannot be approved or published unless you return it to review.") }
+                if transaction.isCredit { Text("Credit or refund. This is not a splittable charge.") }
+                if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
             }
             Section {
                 Picker("Split", selection: $exactMode) {
@@ -352,7 +392,7 @@ struct SplitEditorView: View {
             }
             Section {
                 Button("Approve and add to outbox") { approve() }
-                    .frame(maxWidth: .infinity).disabled(selected.isEmpty || !amountIsValid || transaction.state == .pending)
+                    .frame(maxWidth: .infinity).disabled(selected.isEmpty || !amountIsValid || !transaction.canSplit)
             }
         }
         .navigationTitle("Split expense").navigationBarTitleDisplayMode(.inline)
@@ -378,6 +418,7 @@ struct SplitEditorView: View {
         selected = Set(ids)
     }
     private func approve() {
+        guard transaction.canSplit, !selected.isEmpty, amountIsValid else { return }
         let ids = selected.sorted()
         let owed: [Int]
         if exactMode { owed = ids.map { NSDecimalNumber(decimal: Decimal(string: exactAmounts[$0] ?? "") ?? 0).multiplying(byPowerOf10: 2).intValue } }
