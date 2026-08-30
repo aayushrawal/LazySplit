@@ -2,6 +2,34 @@ import XCTest
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testAccountColorsStayStableAcrossFilteringNewCardsAndReloads() throws {
+        let first = AccountColors.assignments(for: ["card-b", "card-a"], retaining: [:])
+        XCTAssertNotEqual(first["card-a"], first["card-b"])
+        XCTAssertEqual(AccountColors.assignments(for: ["card-b"], retaining: first), first)
+        let restored = try JSONDecoder().decode([String: Int].self, from: JSONEncoder().encode(first))
+        let extended = AccountColors.assignments(for: ["card-c", "card-a", "card-b"], retaining: restored)
+        XCTAssertEqual(extended["card-a"], first["card-a"])
+        XCTAssertEqual(extended["card-b"], first["card-b"])
+        XCTAssertEqual(Set(extended.values).count, 3)
+        let many = AccountColors.assignments(for: (0..<30).map { "card-\($0)" }, retaining: extended)
+        XCTAssertTrue(many.values.allSatisfy { AccountColors.palette.indices.contains($0) })
+    }
+
+    func testAccountColorIdentitySurvivesRenamingAndSeparatesIdenticalLabels() {
+        let first = record(), second = record()
+        first.accountID = UUID()
+        second.accountID = UUID()
+        XCTAssertEqual(first.cardLabel, second.cardLabel)
+        XCTAssertNotEqual(first.accountColorKey, second.accountColorKey)
+        let originalKey = first.accountColorKey
+        first.accountName = "My travel card"
+        XCTAssertEqual(first.accountColorKey, originalKey)
+        let offline = record()
+        let oldKey = offline.accountColorKey
+        offline.accountMask = "9999"
+        XCTAssertNotEqual(offline.accountColorKey, oldKey)
+    }
+
     private func record(amount: Int = 2450, state: ReviewState = .needsReview) -> TransactionRecord {
         TransactionRecord(source: .plaid, accountName: "Card", accountMask: "1234", merchant: "North Cafe",
                           date: Date(timeIntervalSince1970: 1788048000), amountMinor: amount, state: state)

@@ -1,5 +1,25 @@
 import SwiftUI
 
+enum AccountColors {
+    static let palette: [Color] = [.blue, .orange, .purple, .teal, .pink, .green, .indigo, .brown, .cyan, .red]
+
+    // Persist assignments rather than using Swift's per-process randomized hash or filtered row order.
+    static func assignments(for keys: [String], retaining existing: [String: Int]) -> [String: Int] {
+        var result = existing.filter { palette.indices.contains($0.value) }
+        for key in Set(keys).sorted() where result[key] == nil {
+            let used = Set(result.values)
+            let index = palette.indices.first { !used.contains($0) } ?? result.count % palette.count
+            result[key] = index
+        }
+        return result
+    }
+
+    static func color(for key: String, in assignments: [String: Int]) -> Color {
+        guard let index = assignments[key], palette.indices.contains(index) else { return .indigo }
+        return palette[index]
+    }
+}
+
 enum TransactionClassification {
     static func category(for transaction: TransactionRecord) -> (name: String, inferred: Bool) {
         let raw = transaction.category?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

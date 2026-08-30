@@ -343,6 +343,7 @@ struct PublishParticipant: Encodable, Sendable { let userID: Int; let owedMinor:
 struct PublishBody: Encodable, Sendable { let draftID: UUID; let transactionID: UUID; let merchant: String; let date: Date; let amountMinor: Int; let currencyCode: String; let groupID: Int?; let participants: [PublishParticipant] }
 private struct PublishResponse: Decodable { let expenseID: Int }
 struct RemoteTransaction: Decodable {
+    let accountID: UUID?
     let categoryDetail: String?; let city: String?; let region: String?; let country: String?
     let paymentChannel: String?; let isCredit: Bool?
     let id: UUID; let externalID: String?; let source: TransactionSource; let accountName: String; let accountMask: String

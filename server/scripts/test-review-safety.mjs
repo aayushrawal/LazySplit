@@ -10,16 +10,17 @@ import { splitwiseRoutes } from "./dist/splitwise.js";
 const app = Fastify({ logger: false });
 await app.register(transactionRoutes);
 await app.register(splitwiseRoutes);
-const userID = randomUUID(), transactionID = randomUUID();
+const userID = randomUUID(), transactionID = randomUUID(), accountID = randomUUID();
 const token = randomBytes(32).toString("hex");
 const headers = { authorization: `Bearer ${token}` };
 try {
   await pool.query("INSERT INTO users(id) VALUES($1)", [userID]);
   await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '5 minutes')",
     [createHash("sha256").update(token).digest("hex"), userID]);
-  await pool.query(`INSERT INTO transactions(id,user_id,source,merchant,transaction_date,amount_minor,currency_code,fingerprint,city,raw_category)
-    VALUES($1,$2,'plaid','Synthetic Cafe','2026-08-01',1200,'USD',$3,'Test City','FOOD_AND_DRINK')`,
-    [transactionID, userID, randomUUID()]);
+  await pool.query("INSERT INTO accounts(id,user_id,name,mask) VALUES($1,$2,'Synthetic Card','1234')", [accountID, userID]);
+  await pool.query(`INSERT INTO transactions(id,user_id,source,merchant,transaction_date,amount_minor,currency_code,fingerprint,city,raw_category,account_id)
+    VALUES($1,$2,'plaid','Synthetic Cafe','2026-08-01',1200,'USD',$3,'Test City','FOOD_AND_DRINK',$4)`,
+    [transactionID, userID, randomUUID(), accountID]);
   const review = (state, id = transactionID) => app.inject({ method: "PATCH", url: `/v1/transactions/${id}/review`, headers, payload: { state } });
   const publish = () => app.inject({ method: "POST", url: "/v1/splitwise/publish", headers: { ...headers, "idempotency-key": randomUUID() }, payload: {
     transactionID, draftID: randomUUID(), merchant: "Synthetic Cafe", date: "2026-08-01T00:00:00Z",
@@ -31,6 +32,7 @@ try {
   assert.equal(inbox.json().transactions.length, 1, "Personal remains in the default inbox response");
   assert.equal(inbox.json().transactions[0].state, "personal");
   assert.equal(inbox.json().transactions[0].city, "Test City");
+  assert.equal(inbox.json().transactions[0].accountID, accountID, "Stable account identity is returned for color coding");
   const blocked = await publish();
   assert.equal(blocked.statusCode, 409);
   assert.match(blocked.json().message, /Personal transactions/);

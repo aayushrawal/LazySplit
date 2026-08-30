@@ -23,7 +23,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     }
     values.push(query.limit);
     const result = await pool.query(
-      `SELECT t.id,t.external_id AS "externalID",t.source,COALESCE(a.nickname,a.name,'Account') AS "accountName",COALESCE(a.mask,'') AS "accountMask",
+      `SELECT t.id,t.external_id AS "externalID",t.source,t.account_id AS "accountID",COALESCE(a.nickname,a.name,'Account') AS "accountName",COALESCE(a.mask,'') AS "accountMask",
        t.merchant,COALESCE(t.original_description,'') AS "originalDescription",t.transaction_date AS date,
        t.amount_minor::integer AS "amountMinor",t.currency_code AS "currencyCode",t.review_state AS state,
        t.raw_category AS category,t.category_detail AS "categoryDetail",t.city,t.region,t.country,

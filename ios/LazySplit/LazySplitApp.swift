@@ -89,6 +89,7 @@ final class AppSession {
                     context.insert(record); byID[item.id] = record
                 }
                 if let current = byID[item.id] {
+                    current.accountID = item.accountID
                     current.categoryDetail = item.categoryDetail; current.city = item.city; current.region = item.region
                     current.country = item.country; current.paymentChannel = item.paymentChannel; current.isCredit = item.isCredit ?? false
                 }

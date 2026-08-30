@@ -27,6 +27,7 @@ final class TransactionRecord {
     var sourceRaw: String
     var accountName: String
     var accountMask: String
+    var accountID: UUID?
     var merchant: String
     var originalDescription: String
     var date: Date
@@ -54,6 +55,11 @@ final class TransactionRecord {
         return parts.isEmpty ? "Unknown location" : parts.joined(separator: ", ")
     }
     var cardLabel: String { accountMask.isEmpty ? accountName : "\(accountName) • \(accountMask)" }
+    var accountColorKey: String {
+        if let accountID { return accountID.uuidString }
+        // Older caches and offline imports do not yet have a server account ID.
+        return "\(isDemo ? "demo" : "local"):\(accountName)|\(accountMask)"
+    }
 
     var source: TransactionSource { TransactionSource(rawValue: sourceRaw) ?? .csv }
     var state: ReviewState {

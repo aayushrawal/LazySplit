@@ -188,6 +188,18 @@ struct InboxView: View {
     @State private var selected = Set<UUID>()
     @State private var undoActions: [(UUID, ReviewState)] = []
     @State private var lastAction = ""
+    @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
+    @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
+
+    private var accountKeys: [String] { Array(Set(visibleTransactions.map(\.accountColorKey))).sorted() }
+    private var accountColors: [String: Int] {
+        AccountColors.assignments(for: accountKeys, retaining: (try? JSONDecoder().decode([String: Int].self, from: savedAccountColors)) ?? [:])
+    }
+    private var accountLegend: [TransactionRecord] {
+        var seen = Set<String>()
+        return visibleTransactions.filter { seen.insert($0.accountColorKey).inserted }
+            .sorted { $0.cardLabel == $1.cardLabel ? $0.accountColorKey < $1.accountColorKey : $0.cardLabel < $1.cardLabel }
+    }
 
     private var filtered: [TransactionRecord] {
         filters.ordered(visibleTransactions.filter { filters.matches($0, search: search) })
@@ -198,7 +210,23 @@ struct InboxView: View {
     }
 
     var body: some View {
+        let colors = accountColors
         List(selection: $selected) {
+            Toggle(isOn: $colorCodeByAccount) {
+                Label("Color by card / account", systemImage: "paintpalette")
+            }
+            .accessibilityHint("Adds an account color to each transaction without changing which transactions are visible.")
+            if colorCodeByAccount && !accountLegend.isEmpty {
+                DisclosureGroup("Card / account colors") {
+                    ForEach(accountLegend, id: \.accountColorKey) { transaction in
+                        HStack {
+                            Circle().fill(AccountColors.color(for: transaction.accountColorKey, in: colors))
+                                .frame(width: 12, height: 12).accessibilityHidden(true)
+                            Text(transaction.cardLabel).font(.caption)
+                        }
+                    }
+                }
+            }
             if session.isRefreshingTransactions { ProgressView("Loading transactions…") }
             Text("\(filtered.count) matching transactions").font(.caption).foregroundStyle(.secondary)
             if let error = filters.validationError { Text(error).foregroundStyle(.red) }
@@ -211,7 +239,10 @@ struct InboxView: View {
                     .listRowBackground(Color.clear)
             }
             ForEach(filtered) { transaction in
-                NavigationLink { SplitEditorView(transaction: transaction) } label: { TransactionRow(transaction: transaction) }
+                NavigationLink { SplitEditorView(transaction: transaction) } label: {
+                    TransactionRow(transaction: transaction, accountColor: colorCodeByAccount ? AccountColors.color(for: transaction.accountColorKey, in: colors) : nil)
+                }
+                    .listRowBackground(colorCodeByAccount ? AccountColors.color(for: transaction.accountColorKey, in: colors).opacity(0.07) : Color(.systemBackground))
                     .tag(transaction.id)
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
                         if transaction.canClassify {
@@ -231,6 +262,9 @@ struct InboxView: View {
         .navigationTitle("Review")
         .refreshable { await session.refreshTransactions(in: modelContext) }
         .task { await session.refreshTransactions(in: modelContext) }
+        .onChange(of: accountKeys, initial: true) { _, _ in
+            if let data = try? JSONEncoder().encode(accountColors) { savedAccountColors = data }
+        }
         .searchable(text: $search, prompt: "Merchant, description, category or location")
         .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: visibleTransactions) }
         .toolbar {
@@ -287,12 +321,18 @@ struct InboxView: View {
 
 struct TransactionRow: View {
     let transaction: TransactionRecord
+    var accountColor: Color? = nil
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: icon).frame(width: 42, height: 42).background(Color.indigo.opacity(0.1), in: .circle).foregroundStyle(.indigo)
+            if let accountColor {
+                RoundedRectangle(cornerRadius: 2).fill(accountColor).frame(width: 4, height: 44)
+                    .accessibilityHidden(true)
+            }
+            Image(systemName: icon).frame(width: 42, height: 42).background((accountColor ?? .indigo).opacity(0.1), in: .circle).foregroundStyle(accountColor ?? .indigo)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(transaction.merchant).font(.headline).lineLimit(1)
-                Text("\(transaction.accountName) • \(transaction.date.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary)
+                Text("\(transaction.cardLabel) • \(transaction.date.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary)
                 Text("\(TransactionClassification.category(for: transaction).name)\(TransactionClassification.category(for: transaction).inferred ? " (suggested)" : "") · \(transaction.locationLabel)")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }

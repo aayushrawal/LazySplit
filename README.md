@@ -36,6 +36,8 @@ Without a configured API, the app can still launch in a clearly labelled demo mo
 
 All transactions, including Personal, remain visible by default. Mark a charge **Personal** using its swipe action, detail screen, or bulk selection to exclude it from splitting. Turn on **Filters → Hide personal transactions** only when you want to hide those entries; reset filters restores the full list. Single and bulk review actions support Undo, and offline review changes retry when refreshed.
 
+Turn on **Color by card / account** at the top of Inbox to add account-colored accents and subtle row backgrounds. Expand **Card / account colors** for the legend. The toggle and color assignments are remembered on this device; filtering or renaming a synced account does not change its color. Card names and last four digits remain visible with or without color. The ten-color palette repeats for larger account collections.
+
 Filter by amount range, currency, date range, card/account, merchant, category, bank-provided location, payment channel, status, source, charge/refund type, or possible duplicates. Amount sorting groups currencies separately without converting them. Categories prefer Plaid data and label merchant-name fallbacks as suggestions. Missing locations stay unknown; the app does not infer your location or use GPS.
 
 The app refreshes its transaction cache after connecting a card, when returning to the foreground, and when pulling to refresh Inbox or Accounts. It follows all transaction pages, including histories larger than 500 entries, and preserves local review decisions during refresh. Accounts → **Rename card** sets a private LazySplit nickname when the bank supplies a generic/rewards-program name instead of the card product.
