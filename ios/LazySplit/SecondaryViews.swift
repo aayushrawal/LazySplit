@@ -20,6 +20,7 @@ struct CardsAccountsView: View {
     @State private var isRefreshing = false
     @State private var renamingAccount: ConnectedAccountSummary?
     @State private var accountNickname = ""
+    @State private var selectedAccountID: String?
 
     private var visibleTransactions: [TransactionRecord] {
         transactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) }
@@ -28,56 +29,63 @@ struct CardsAccountsView: View {
     private var accounts: [AccountPresentation] {
         var values = [String: AccountPresentation]()
         for account in overview?.accounts ?? [] {
-            let key = account.name + "|" + account.mask
-            values[key] = AccountPresentation(name: account.name, mask: account.mask, currencyCode: account.currencyCode, connected: account.connected, transactions: [])
+            let key = account.id.uuidString
+            values[key] = AccountPresentation(id: key, remoteID: account.id, name: account.name, mask: account.mask, currencyCode: account.currencyCode, connected: account.connected, transactions: [])
         }
         for transaction in visibleTransactions {
-            let key = transaction.accountName + "|" + transaction.accountMask
+            let matchingRemoteKey = values.first { _, account in
+                account.name == transaction.accountName && account.mask == transaction.accountMask
+            }?.key
+            let key = transaction.accountID?.uuidString ?? matchingRemoteKey ?? transaction.accountName + "|" + transaction.accountMask
             if var current = values[key] {
                 current.transactions.append(transaction); values[key] = current
             } else {
-                values[key] = AccountPresentation(name: transaction.accountName, mask: transaction.accountMask, currencyCode: transaction.currencyCode, connected: false, transactions: [transaction])
+                values[key] = AccountPresentation(id: key, remoteID: transaction.accountID, name: transaction.accountName, mask: transaction.accountMask, currencyCode: transaction.currencyCode, connected: false, transactions: [transaction])
             }
         }
         return values.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    private var selectedAccount: AccountPresentation? {
+        accounts.first { $0.id == selectedAccountID } ?? accounts.first
+    }
+
     var body: some View {
         List {
-            Section {
-                HStack(spacing: 14) {
-                    Image(systemName: "creditcard.and.123").font(.title2).foregroundStyle(.indigo)
-                        .frame(width: 48, height: 48).background(Color.indigo.opacity(0.12), in: .rect(cornerRadius: 14))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(accounts.isEmpty ? "Connect your first account" : "\(accounts.count) account\(accounts.count == 1 ? "" : "s")")
-                            .font(.headline)
-                        Text("Cards, transaction history, and coverage in one place.").font(.caption).foregroundStyle(.secondary)
-                    }
-                }.padding(.vertical, 4)
-            }
-
-            Section("Cards & bank accounts") {
+            Section("Add or refresh") {
                 PlaidConnectRow(message: $message) { Task { await refreshConnections() } }
                 Button { importAccount = nil; showingImporter = true } label: { Label("Upload statements", systemImage: "doc.badge.plus") }
                 Button { showingManualAccount = true } label: { Label("Add account manually", systemImage: "creditcard.badge.plus") }
-                if accounts.isEmpty {
-                    ContentUnavailableView("No accounts yet", systemImage: "creditcard", description: Text("Connect through Plaid or add a statement-only account such as Apple Card."))
-                } else {
-                    ForEach(accounts) { account in
-                        VStack(alignment: .leading) {
-                            AccountHistoryCard(account: account)
-                            if let remote = overview?.accounts.first(where: { $0.name == account.name && $0.mask == account.mask }) {
-                                Button {
-                                    importAccount = StatementAccount(id: remote.id, name: remote.name, mask: remote.mask, currencyCode: remote.currencyCode)
-                                    showingImporter = true
-                                } label: { Label("Upload statement to this account", systemImage: "doc.badge.plus") }
-                                .buttonStyle(.borderless)
-                                Button {
-                                    accountNickname = remote.name
-                                    renamingAccount = remote
-                                } label: { Label("Rename card", systemImage: "pencil") }
-                                .buttonStyle(.borderless)
+            }
+
+            if accounts.isEmpty {
+                Section { ContentUnavailableView("No accounts yet", systemImage: "creditcard", description: Text("Connect through Plaid or add a statement-only account such as Apple Card.")) }
+            } else {
+                Section("Choose an account") {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 10) {
+                            ForEach(accounts) { account in
+                                AccountSelectorCard(account: account, selected: selectedAccount?.id == account.id) {
+                                    withAnimation(.snappy) { selectedAccountID = account.id }
+                                }
                             }
+                        }.padding(.vertical, 2)
+                    }.scrollIndicators(.hidden)
+                }
+
+                if let account = selectedAccount {
+                    Section("Account history") {
+                        AccountHistoryCard(account: account) {
+                            importAccount = account.remoteID.map { StatementAccount(id: $0, name: account.name, mask: account.mask, currencyCode: account.currencyCode) }
+                            showingImporter = true
+                        } onSync: {
+                            Task { await refreshConnections() }
+                        }
+                        if let remote = overview?.accounts.first(where: { $0.id == account.remoteID }) {
+                            Button {
+                                accountNickname = remote.name
+                                renamingAccount = remote
+                            } label: { Label("Rename this account", systemImage: "pencil") }
                         }
                     }
                 }
@@ -136,6 +144,9 @@ struct CardsAccountsView: View {
             Text("Your bank supplied “\(renamingAccount?.providerName ?? renamingAccount?.name ?? "Account")”. Set the product name you prefer; this only changes LazySplit.")
         }
         .task { await refreshConnections() }
+        .onChange(of: accounts.map(\.id)) { _, ids in
+            if selectedAccountID == nil || !ids.contains(selectedAccountID!) { selectedAccountID = ids.first }
+        }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await refreshConnections() } } }
     }
 
@@ -149,26 +160,58 @@ struct CardsAccountsView: View {
 }
 
 private struct AccountPresentation: Identifiable {
+    let id: String
+    var remoteID: UUID?
     var name: String
     var mask: String
     var currencyCode: String
     var connected: Bool
     var transactions: [TransactionRecord]
-    var id: String { name + "|" + mask }
+}
+
+private struct AccountSelectorCard: View {
+    let account: AccountPresentation
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Image(systemName: account.connected ? "creditcard.fill" : "creditcard")
+                    Spacer()
+                    if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(.white) }
+                }
+                Text(account.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(account.mask.isEmpty ? account.currencyCode : "•••• \(account.mask)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(selected ? .white.opacity(0.82) : .secondary)
+            }
+            .foregroundStyle(selected ? .white : .primary)
+            .padding(12).frame(width: 154, height: 104, alignment: .leading)
+            .background(selected ? Color.indigo : Color.secondary.opacity(0.1), in: .rect(cornerRadius: 16))
+            .overlay { RoundedRectangle(cornerRadius: 16).stroke(selected ? Color.indigo : Color.secondary.opacity(0.12)) }
+        }.buttonStyle(.plain)
+        .accessibilityLabel("View \(account.name)\(account.mask.isEmpty ? "" : ", ending \(account.mask)")")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 }
 
 private struct AccountHistoryCard: View {
     let account: AccountPresentation
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 5), count: 12)
-    private var months: [CoverageMonth] {
+    let onUpload: () -> Void
+    let onSync: () -> Void
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+    private var purchaseTransactions: [TransactionRecord] { account.transactions.filter { !$0.isCredit && $0.amountMinor > 0 } }
+    private var years: [AccountCoverageYear] {
         let calendar = Calendar.current
         let start = calendar.date(byAdding: .month, value: -35, to: calendar.date(from: calendar.dateComponents([.year, .month], from: .now))!)!
-        return (0..<36).map { offset in
+        let months = (0..<36).map { offset in
             let date = calendar.date(byAdding: .month, value: offset, to: start)!
-            let inMonth = account.transactions.filter { calendar.isDate($0.date, equalTo: date, toGranularity: .month) }
-            let source: TransactionSource? = inMonth.contains(where: { $0.source == .csv }) ? .csv : inMonth.first?.source
-            return CoverageMonth(date: date, source: source)
+            let rows = purchaseTransactions.filter { calendar.isDate($0.date, equalTo: date, toGranularity: .month) }
+            return AccountCoverageMonth(date: date, hasPlaid: rows.contains { $0.source == .plaid }, hasStatement: rows.contains { $0.source == .csv }, count: rows.count)
         }
+        return Dictionary(grouping: months.reversed()) { calendar.component(.year, from: $0.date) }
+            .map { AccountCoverageYear(year: $0.key, months: $0.value) }.sorted { $0.year > $1.year }
     }
 
     var body: some View {
@@ -183,25 +226,72 @@ private struct AccountHistoryCard: View {
                 Label(account.connected ? "Connected" : "History", systemImage: account.connected ? "checkmark.circle.fill" : "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(account.connected ? .green : .secondary)
             }
-            HStack {
-                LabeledContent("Charges", value: "\(account.transactions.count)")
-                if let latest = account.transactions.map(\.date).max() {
+            HStack(spacing: 18) {
+                LabeledContent("Purchases", value: "\(purchaseTransactions.count)")
+                if let latest = purchaseTransactions.map(\.date).max() {
                     Spacer(); LabeledContent("Latest", value: latest.formatted(date: .abbreviated, time: .omitted))
                 }
             }.font(.caption).foregroundStyle(.secondary)
-            LazyVGrid(columns: columns, spacing: 6) {
-                ForEach(months) { month in
-                    RoundedRectangle(cornerRadius: 3).fill(color(month.source)).frame(height: 24).accessibilityLabel("\(month.date.formatted(.dateTime.month().year())): \(month.source?.rawValue ?? "missing")")
+
+            HStack {
+                Button(action: onUpload) { Label("Upload statement", systemImage: "doc.badge.plus") }
+                    .buttonStyle(.borderedProminent).tint(.cyan)
+                if account.connected {
+                    Button(action: onSync) { Label("Sync now", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
                 }
             }
-            HStack(spacing: 14) {
-                Label("Plaid", systemImage: "square.fill").foregroundStyle(.indigo)
-                Label("Statement", systemImage: "square.fill").foregroundStyle(.cyan)
-                Label("Gap", systemImage: "square.fill").foregroundStyle(.gray.opacity(0.3))
-            }.font(.caption)
-        }.padding(.vertical, 8)
+
+            Divider()
+            HStack { Text("Month-by-month history").font(.subheadline.weight(.semibold)); Spacer(); Text("Last 36 months").font(.caption).foregroundStyle(.secondary) }
+            Text("Tap any missing month to upload its statement. Plaid months update when you sync.").font(.caption).foregroundStyle(.secondary)
+            ForEach(years) { year in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(String(year.year)).font(.headline.monospacedDigit())
+                    LazyVGrid(columns: columns, spacing: 8) {
+                        ForEach(year.months) { month in
+                            Button { if month.isMissing { onUpload() } } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(month.date.formatted(.dateTime.month(.abbreviated).year()))
+                                        .font(.caption.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                                    Label(month.status, systemImage: month.symbol)
+                                        .font(.caption2).lineLimit(1).minimumScaleFactor(0.72)
+                                    if month.count > 0 { Text("\(month.count) purchase\(month.count == 1 ? "" : "s")").font(.caption2).foregroundStyle(.secondary) }
+                                }
+                                .foregroundStyle(month.foreground)
+                                .padding(9).frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+                                .background(month.background, in: .rect(cornerRadius: 11))
+                            }.buttonStyle(.plain).allowsHitTesting(month.isMissing)
+                            .accessibilityLabel("\(month.date.formatted(.dateTime.month(.wide).year())): \(month.status), \(month.count) purchases")
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 13) {
+                Label("Plaid sync", systemImage: "circle.fill").foregroundStyle(.indigo)
+                Label("Uploaded", systemImage: "circle.fill").foregroundStyle(.cyan)
+                Label("Missing", systemImage: "circle").foregroundStyle(.secondary)
+            }.font(.caption2)
+        }.padding(.vertical, 6)
     }
-    private func color(_ source: TransactionSource?) -> Color { source == .plaid ? .indigo : source == .csv ? .cyan : .gray.opacity(0.18) }
+}
+
+private struct AccountCoverageYear: Identifiable {
+    let year: Int
+    let months: [AccountCoverageMonth]
+    var id: Int { year }
+}
+
+private struct AccountCoverageMonth: Identifiable {
+    let date: Date
+    let hasPlaid: Bool
+    let hasStatement: Bool
+    let count: Int
+    var id: Date { date }
+    var isMissing: Bool { !hasPlaid && !hasStatement }
+    var status: String { hasPlaid && hasStatement ? "Both" : hasPlaid ? "Synced" : hasStatement ? "Uploaded" : "Missing" }
+    var symbol: String { hasPlaid && hasStatement ? "checkmark.circle.fill" : hasPlaid ? "arrow.triangle.2.circlepath.circle.fill" : hasStatement ? "doc.circle.fill" : "plus.circle" }
+    var foreground: Color { hasPlaid ? .indigo : hasStatement ? .cyan : .secondary }
+    var background: Color { foreground.opacity(isMissing ? 0.07 : 0.12) }
 }
 
 struct OutboxView: View {

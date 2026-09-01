@@ -117,7 +117,7 @@ struct StagedStatement: Identifiable {
             }
             let text = String(data: csvData, encoding: .utf8) ?? String(data: csvData, encoding: .isoLatin1) ?? ""
             let count = CSVImporter.parse(text).dropFirst().filter { !$0.allSatisfy(\.isEmpty) }.count
-            warning = "\(records.count) transactions recognized; \(duplicates) exact duplicate rows skipped; \(max(0, count - records.count - duplicates)) rows could not be read. Check the mapping and compare the full preview with your statement."
+            warning = "\(records.count) purchases recognized; \(duplicates) exact duplicate rows skipped; \(max(0, count - records.count - duplicates)) credit, payment, return, or unreadable rows excluded. Check the mapping and compare the full preview with your statement."
         } catch { self.error = error.localizedDescription }
     }
 }

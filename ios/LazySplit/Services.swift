@@ -277,13 +277,16 @@ enum CSVImporter {
                 let credit = decimal(row[mapping.creditColumn ?? ""] ?? "") ?? 0
                 amountText = NSDecimalNumber(decimal: debit - credit).stringValue
             }
-            guard let amount = decimal(amountText), amount != 0 else { return nil }
-            let minor = NSDecimalNumber(decimal: abs(amount) * 100).intValue
-            let fingerprint = TransactionFingerprint.make(account: account, date: date, amountMinor: amount < 0 ? -minor : minor, merchant: merchant)
+            // Credit-card exports normally represent credits, refunds, and payments as
+            // negative values. They are not expenses to split, so do not create ledger
+            // records for them. Some issuers export these rows with positive values;
+            // recognize their explicit descriptions as a second line of defense.
+            guard let amount = decimal(amountText), amount > 0, !isNonPurchase(description: merchant) else { return nil }
+            let minor = NSDecimalNumber(decimal: amount * 100).intValue
+            let fingerprint = TransactionFingerprint.make(account: account, date: date, amountMinor: minor, merchant: merchant)
             if seen.contains(fingerprint) { duplicates += 1; return nil }
             seen.insert(fingerprint)
             let record = TransactionRecord(source: .csv, accountName: account, merchant: merchant, originalDescription: merchant, date: date, amountMinor: minor, currencyCode: currency.uppercased(), fingerprint: fingerprint)
-            record.isCredit = amount < 0
             record.inboxReceivedAt = receivedAt
             return record
         }
@@ -312,6 +315,13 @@ enum CSVImporter {
     private static func decimal(_ value: String) -> Decimal? {
         let cleaned = value.replacingOccurrences(of: "$", with: "").replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "(", with: "-").replacingOccurrences(of: ")", with: "").trimmingCharacters(in: .whitespaces)
         return Decimal(string: cleaned, locale: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private static func isNonPurchase(description: String) -> Bool {
+        description.range(
+            of: #"(?i)\b(?:auto\s*pay|mobile\s+payment|online\s+payment|payment(?:s| received)?|return(?:ed)?|refund(?:ed)?|credits?|adjustments?)\b"#,
+            options: .regularExpression
+        ) != nil
     }
 }
 

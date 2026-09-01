@@ -167,14 +167,14 @@ final class CSVImporterTests: XCTestCase {
         let csv = try PDFStatementImporter.reviewedCSV(rows: preview.rows, endingOn: closing, currency: "USD")
         let mapping = try CSVImporter.preview(data: csv).suggestedMapping
         let (records, duplicates) = try CSVImporter.transactions(data: csv, mapping: mapping, fallbackAccount: "Test card", knownFingerprints: [])
-        XCTAssertEqual(records.count, 5); XCTAssertEqual(duplicates, 0)
+        XCTAssertEqual(records.count, 2); XCTAssertEqual(duplicates, 0)
         XCTAssertEqual(records[1].merchant, "Flight, \"Window Seat\"")
         XCTAssertEqual(records[1].amountMinor, 123456)
-        XCTAssertEqual(records.map(\.isCredit), [false, false, true, true, true])
+        XCTAssertEqual(records.map(\.isCredit), [false, false])
         XCTAssertEqual(records[0].date, ISO8601DateFormatter().date(from: "2025-12-28T00:00:00Z"))
         let repeated = try CSVImporter.transactions(data: csv, mapping: mapping, fallbackAccount: "Test card", knownFingerprints: Set(records.map(\.fingerprint)))
         XCTAssertTrue(repeated.0.isEmpty)
-        XCTAssertEqual(repeated.1, 5)
+        XCTAssertEqual(repeated.1, 2)
     }
 
     func testAppleCardPDFUsesChargeNotDailyCashAndExcludesPaymentsAndACMI() throws {
@@ -615,19 +615,24 @@ final class CSVImporterTests: XCTestCase {
         let data = Data(csv.utf8)
         let preview = try CSVImporter.preview(data: data)
         let result = try CSVImporter.transactions(data: data, mapping: preview.suggestedMapping, fallbackAccount: "Card", knownFingerprints: [])
-        XCTAssertEqual(result.0.map(\.amountMinor), [9015, 1220])
-        XCTAssertEqual(result.0.map(\.isCredit), [false, true])
+        XCTAssertEqual(result.0.map(\.amountMinor), [9015])
+        XCTAssertEqual(result.0.map(\.isCredit), [false])
         XCTAssertEqual(result.0.filter { InboxFilters().matches($0) }.count, 1)
     }
 
-    func testMatchingChargeAndRefundRemainSeparate() throws {
+    func testCSVSkipsNegativeCreditsAndPositivePaymentDescriptions() throws {
         let data = Data("Date,Description,Debit,Credit\n2026-08-01,Shop,25.00,\n2026-08-01,Shop,,25.00\n".utf8)
         let preview = try CSVImporter.preview(data: data)
         let (records, duplicates) = try CSVImporter.transactions(data: data, mapping: preview.suggestedMapping, fallbackAccount: "Card", knownFingerprints: [])
-        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.count, 1)
         XCTAssertEqual(duplicates, 0)
-        XCTAssertEqual(records.map(\.isCredit), [false, true])
-        XCTAssertEqual(records.filter { InboxFilters().matches($0) }.count, 1)
+        XCTAssertEqual(records.first?.merchant, "Shop")
+
+        let amountCSV = Data("Date,Description,Amount\n08/01/2026,Dinner,25.00\n08/02/2026,Card payment,25.00\n08/03/2026,Merchandise return,10.00\n08/04/2026,Refund,-8.00\n08/05/2026,Statement credit,5.00\n08/06/2026,Fee adjustment,2.00\n".utf8)
+        let amountPreview = try CSVImporter.preview(data: amountCSV)
+        let amountRecords = try CSVImporter.transactions(data: amountCSV, mapping: amountPreview.suggestedMapping, fallbackAccount: "Card", knownFingerprints: []).0
+        XCTAssertEqual(amountRecords.map(\.merchant), ["Dinner"])
+        XCTAssertEqual(amountRecords.map(\.amountMinor), [2500])
     }
 
     func testFingerprintNormalizesMerchantPunctuation() {
