@@ -88,9 +88,8 @@ enum PDFStatementImporter {
         let startsWithDate = try! NSRegularExpression(pattern: #"^\s*"# + dateToken + #"\s"#)
         let documentText = pages.joined(separator: "\n")
         let isAppleCard = documentText.range(of: #"(?i)\bApple Card\b"#, options: .regularExpression) != nil
-        let isAmex = documentText.range(of: #"(?i)\b(?:American Express|Amex)\b"#, options: .regularExpression) != nil
+        let isAmex = isAmexStatement(documentText)
         var rows: [PDFStatementRow] = [], unmatched = 0, emptyPages = 0, excluded = 0
-        var amexSection = AmexStatementSection.none
         for (index, text) in pages.enumerated() {
             let before = rows.count
             var appleSection = AppleStatementSection.none
@@ -108,18 +107,18 @@ enum PDFStatementImporter {
                 }
                 if isAmex {
                     if normalizedLine == "new charges" || normalizedLine.hasPrefix("new charges ") || normalizedLine.contains("new pay over time charges") || normalizedLine.contains("new pay in full charges") {
-                        amexSection = .charges; continue
+                        continue
                     }
                     if normalizedLine == "payments" || normalizedLine == "credits" || normalizedLine.hasPrefix("payments and credits") {
-                        amexSection = .payments; continue
+                        continue
                     }
                     if normalizedLine == "fees" || normalizedLine == "interest charged" || normalizedLine.hasPrefix("fees and interest") {
-                        amexSection = .adjustments; continue
+                        continue
                     }
                 }
                 let range = NSRange(line.startIndex..., in: line)
                 let dated = startsWithDate.firstMatch(in: line, range: range) != nil
-                if dated && ((isAppleCard && appleSection != .none && appleSection != .transactions) || (isAmex && amexSection != .none && amexSection != .charges)) {
+                if dated && isAppleCard && appleSection != .none && appleSection != .transactions {
                     excluded += 1; continue
                 }
                 if let match = appleRegex.firstMatch(in: line, range: range) {
@@ -138,7 +137,7 @@ enum PDFStatementImporter {
                 func value(_ index: Int) -> String { Range(match.range(at: index), in: line).map { String(line[$0]).trimmingCharacters(in: .whitespaces) } ?? "" }
                 var merchant = value(2)
                 let rawAmount = value(3).uppercased()
-                if isAmex && amexSection == .charges {
+                if isAmex {
                     // Modern Amex statements add a Foreign Spend column before the
                     // billed USD amount. The generic balance-table guard would reject
                     // that extra decimal, so remove only the final foreign-spend value
@@ -160,6 +159,9 @@ enum PDFStatementImporter {
                 let amount = rawAmount.replacingOccurrences(of: #"[^0-9.]"#, with: "", options: .regularExpression)
                 guard minorUnits(amount) != nil else { unmatched += 1; continue }
                 let credit = rawAmount.contains("CR") || rawAmount.contains("-") || rawAmount.contains("(") || merchant.range(of: #"(?i)\b(payment|refund|credit|reversal)\b"#, options: .regularExpression) != nil
+                if isAmex && (credit || merchant.range(of: #"(?i)\b(?:payments?|returns?|refunds?|credits?|reversals?|fees?|interest|adjustments?|cash advances?)\b"#, options: .regularExpression) != nil) {
+                    excluded += 1; continue
+                }
                 rows.append(PDFStatementRow(rawDate: value(1), originalLine: line, page: index + 1, merchant: merchant, amountText: amount, isCredit: credit))
             }
             if rows.count == before { emptyPages += 1 }
@@ -168,7 +170,15 @@ enum PDFStatementImporter {
     }
 
     private enum AppleStatementSection { case none, transactions, payments, installments }
-    private enum AmexStatementSection { case none, payments, charges, adjustments }
+
+    private static func isAmexStatement(_ text: String) -> Bool {
+        if text.range(of: #"(?i)\b(?:American Express|Amex)\b"#, options: .regularExpression) != nil { return true }
+        // Some statement generations draw the issuer/card title as an image. These
+        // three labels together are a stable Amex transaction-detail signature.
+        return text.range(of: #"(?i)\b(?:Card|Account) Ending\b"#, options: .regularExpression) != nil
+            && text.range(of: #"(?i)\bClosing Date\b"#, options: .regularExpression) != nil
+            && text.range(of: #"(?i)\b(?:Payments and Credits|Pay Over Time)\b"#, options: .regularExpression) != nil
+    }
 
     static func minorUnits(_ value: String) -> Int? {
         let cleaned = value.trimmingCharacters(in: .whitespaces)

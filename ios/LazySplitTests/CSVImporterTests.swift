@@ -133,6 +133,47 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertEqual(preview.excludedRows, 1)
     }
 
+    func testAmexGold2023Through2025LayoutVariants() {
+        let samples: [(year: Int, page: String, merchants: [String], amounts: [String])] = [
+            (2023, """
+            American Express Gold Card
+            Closing Date 12/26/23 Account Ending 2-51002
+            Payments and Credits
+            12/20/23* ONLINE PAYMENT - THANK YOU -$249.41
+            New Charges
+            11/28/23 UBER TRIP HTTPS://UBER.COM CA $12.96
+            Fees
+            """, ["UBER TRIP HTTPS://UBER.COM CA"], ["12.96"]),
+            (2024, """
+            Gold Card
+            Closing Date 05/28/24 Account Ending 9-77002
+            Payments and Credits
+            05/10/24* MOBILE PAYMENT RECEIVED -$500.00
+            Detail - Pay Over Time activity
+            05/12/24 GROCERY MARKET AUSTIN TX $84.21
+            05/15/24 COFFEE SHOP DALLAS TX $6.75 †
+            Fees and Interest
+            05/28/24 LATE PAYMENT FEE $40.00
+            """, ["GROCERY MARKET AUSTIN TX", "COFFEE SHOP DALLAS TX"], ["84.21", "6.75"]),
+            (2025, """
+            American Express Classic Gold Card
+            Closing Date 05/29/25 Account Ending 4-42007
+            Payments and Credits
+            05/13/25* AUTOPAY PAYMENT RECEIVED - THANK YOU -$760.08
+            New Charges Summary
+            04/29/25 WALMART SUPER VENTA EN LINEA CIUDAD DE MEXICO 507.41 $25.97 ⧫
+            05/02/25 AMAZON MEDIA GROUP 866-216-1072 WA $274.64 ⧫
+            """, ["WALMART SUPER VENTA EN LINEA CIUDAD DE MEXICO", "AMAZON MEDIA GROUP 866-216-1072 WA"], ["25.97", "274.64"])
+        ]
+
+        for sample in samples {
+            let preview = PDFStatementImporter.parse(pages: [sample.page])
+            XCTAssertEqual(preview.rows.map(\.merchant), sample.merchants, "\(sample.year) merchants")
+            XCTAssertEqual(preview.rows.map(\.amountText), sample.amounts, "\(sample.year) amounts")
+            XCTAssertTrue(preview.rows.allSatisfy { !$0.isCredit }, "\(sample.year) must contain purchases only")
+        }
+    }
+
     func testStatementBatchRequiresReviewAccountsAndMatchingCurrency() throws {
         let account = StatementAccount(id: UUID(), name: "Apple Card", mask: "1234", currencyCode: "USD")
         var row = PDFStatementRow(rawDate: "08/31/2026", originalLine: "08/31 Coffee 10.00", page: 1, merchant: "Coffee", amountText: "10.00", isCredit: false,
