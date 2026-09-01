@@ -5,6 +5,46 @@ import PDFKit
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testStatementPeriodInferenceFromPDFNames() throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let reference = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 3, day: 10)))
+
+        let named = StatementPeriodInference.infer(filename: "Apple Card - August 2026.pdf", referenceDate: reference)
+        XCTAssertEqual(named.kind, .monthly)
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: named.endingOn), DateComponents(year: 2026, month: 8, day: 31))
+
+        let numeric = StatementPeriodInference.infer(filename: "Statement_2025-02.pdf", referenceDate: reference)
+        XCTAssertEqual(numeric.kind, .monthly)
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: numeric.endingOn), DateComponents(year: 2025, month: 2, day: 28))
+
+        let annual = StatementPeriodInference.infer(filename: "Annual Statement 2024.pdf", referenceDate: reference)
+        XCTAssertEqual(annual.kind, .yearly)
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: annual.endingOn), DateComponents(year: 2024, month: 12, day: 31))
+
+        let missingYear = StatementPeriodInference.infer(filename: "Apple Card August.pdf", referenceDate: reference)
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: missingYear.endingOn), DateComponents(year: 2026, month: 8, day: 31))
+        XCTAssertTrue(missingYear.message.contains("file date"))
+
+        let cardSuffix = StatementPeriodInference.infer(filename: "Card 1234.pdf", referenceDate: reference)
+        XCTAssertEqual(cardSuffix.kind, .monthly)
+        XCTAssertTrue(cardSuffix.message.contains("No statement period"))
+    }
+
+    func testYearlyPDFParsesMonthNameDates() throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let annualEnd = try XCTUnwrap(calendar.date(from: DateComponents(year: 2024, month: 12, day: 31)))
+        let preview = PDFStatementImporter.parse(pages: ["Jan 2 Coffee Shop 12.34\nDecember 31 Grocery Store 56.78\nFeb 29, 2024 Leap Day Lunch 20.24"])
+        XCTAssertEqual(preview.rows.count, 3)
+        XCTAssertEqual(preview.rows.compactMap { $0.date(endingOn: annualEnd) }.map { calendar.dateComponents([.year, .month, .day], from: $0) }, [
+            DateComponents(year: 2024, month: 1, day: 2),
+            DateComponents(year: 2024, month: 12, day: 31),
+            DateComponents(year: 2024, month: 2, day: 29)
+        ])
+
+        let january = StatementPeriodInference.infer(filename: "Apple Card January 2026.pdf", referenceDate: annualEnd)
+        XCTAssertEqual(PDFStatementImporter.date("12/28", endingOn: january.endingOn), calendar.date(from: DateComponents(year: 2025, month: 12, day: 28)))
+    }
+
     func testStatementBatchRequiresReviewAccountsAndMatchingCurrency() throws {
         let account = StatementAccount(id: UUID(), name: "Apple Card", mask: "1234", currencyCode: "USD")
         var row = PDFStatementRow(rawDate: "08/31/2026", originalLine: "08/31 Coffee 10.00", page: 1, merchant: "Coffee", amountText: "10.00", isCredit: false,

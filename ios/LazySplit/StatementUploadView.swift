@@ -12,11 +12,82 @@ struct StatementAccount: Identifiable, Codable, Hashable, Sendable {
     static let currencies = ["USD", "CAD", "EUR", "GBP", "AUD", "INR", "SGD", "CHF"]
 }
 
+enum StatementPeriodKind: String, CaseIterable, Identifiable, Sendable {
+    case monthly, yearly
+    var id: Self { self }
+    var title: String { self == .monthly ? "Monthly" : "Yearly" }
+}
+
+struct StatementPeriodInference: Sendable, Equatable {
+    let kind: StatementPeriodKind
+    let endingOn: Date
+    let message: String
+
+    static func infer(filename: String, referenceDate: Date = .now) -> Self {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let base = (filename as NSString).deletingPathExtension
+        let currentYear = calendar.component(.year, from: referenceDate)
+        // The filename is authoritative when it contains a period; modification dates can be stale after downloads or restores.
+        let validYears = 2000...2100
+        let monthPattern = #"(?i)\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b(?:[\s._-]+(20\d{2}))?"#
+        if let regex = try? NSRegularExpression(pattern: monthPattern), let match = regex.firstMatch(in: base, range: NSRange(base.startIndex..., in: base)),
+           let monthRange = Range(match.range(at: 1), in: base) {
+            let names = ["jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12]
+            let monthText = String(base[monthRange]); let month = names[monthText.prefix(3).lowercased()]!
+            var year = currentYear; var yearWasInName = false
+            if match.range(at: 2).location != NSNotFound, let range = Range(match.range(at: 2), in: base), let parsed = Int(base[range]), validYears.contains(parsed) { year = parsed; yearWasInName = true }
+            let end = endOfMonth(year: year, month: month, calendar: calendar)
+            let label = monthLabel(end)
+            return Self(kind: .monthly, endingOn: end, message: yearWasInName ? "Inferred \(label) from the filename. Confirm it before importing." : "Inferred \(monthText) from the filename and used \(year) from the file date. Confirm the year before importing.")
+        }
+        let numericMonthPattern = #"(?<!\d)(20\d{2})[._-](0?[1-9]|1[0-2])(?!\d)"#
+        if let match = firstMatch(numericMonthPattern, in: base), let year = capturedInt(1, match: match, in: base), let month = capturedInt(2, match: match, in: base), validYears.contains(year) {
+            let end = endOfMonth(year: year, month: month, calendar: calendar)
+            let label = monthLabel(end)
+            return Self(kind: .monthly, endingOn: end, message: "Inferred \(label) from the filename. Confirm it before importing.")
+        }
+        let reverseMonthPattern = #"(?<!\d)(0?[1-9]|1[0-2])[._-](20\d{2})(?!\d)"#
+        if let match = firstMatch(reverseMonthPattern, in: base), let month = capturedInt(1, match: match, in: base), let year = capturedInt(2, match: match, in: base), validYears.contains(year) {
+            let end = endOfMonth(year: year, month: month, calendar: calendar)
+            let label = monthLabel(end)
+            return Self(kind: .monthly, endingOn: end, message: "Inferred \(label) from the filename. Confirm it before importing.")
+        }
+        let annualPattern = #"(?i)(?:\b(?:annual|yearly|year)\b.*?\b(20\d{2})\b|\b(20\d{2})\b.*?\b(?:annual|yearly|year)\b)"#
+        if let match = firstMatch(annualPattern, in: base), let year = capturedInt(match.range(at: 1).location == NSNotFound ? 2 : 1, match: match, in: base), validYears.contains(year) {
+            return Self(kind: .yearly, endingOn: date(year: year, month: 12, day: 31, calendar: calendar), message: "Inferred annual statement for \(year) from the filename. Confirm it before importing.")
+        }
+        if let match = firstMatch(#"^\s*(20\d{2})\s*$"#, in: base), let year = capturedInt(1, match: match, in: base), validYears.contains(year) {
+            return Self(kind: .yearly, endingOn: date(year: year, month: 12, day: 31, calendar: calendar), message: "Inferred annual statement for \(year) from the filename. Confirm it before importing.")
+        }
+        return Self(kind: .monthly, endingOn: referenceDate, message: "No statement period was found in the filename. Choose the month or switch to Yearly before importing.")
+    }
+
+    static func normalized(_ date: Date, for kind: StatementPeriodKind) -> Date {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let year = calendar.component(.year, from: date)
+        return kind == .yearly ? self.date(year: year, month: 12, day: 31, calendar: calendar) : endOfMonth(year: year, month: calendar.component(.month, from: date), calendar: calendar)
+    }
+
+    private static func firstMatch(_ pattern: String, in value: String) -> NSTextCheckingResult? { try? NSRegularExpression(pattern: pattern).firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) }
+    private static func capturedInt(_ index: Int, match: NSTextCheckingResult, in value: String) -> Int? { Range(match.range(at: index), in: value).flatMap { Int(value[$0]) } }
+    private static func date(year: Int, month: Int, day: Int, calendar: Calendar) -> Date { calendar.date(from: DateComponents(year: year, month: month, day: day))! }
+    private static func monthLabel(_ date: Date) -> String {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = .gmt; formatter.dateFormat = "MMMM yyyy"
+        return formatter.string(from: date)
+    }
+    private static func endOfMonth(year: Int, month: Int, calendar: Calendar) -> Date {
+        let start = date(year: year, month: month, day: 1, calendar: calendar)
+        return calendar.date(byAdding: DateComponents(month: 1, day: -1), to: start)!
+    }
+}
+
 struct StagedStatement: Identifiable {
     let id = UUID()
     var name: String
     var accountID: UUID?
     var endingOn = Date.now
+    var periodKind: StatementPeriodKind = .monthly
+    var periodInference = "Choose the statement month before importing."
     var rows: [PDFStatementRow] = []
     var pdf: PDFStatementPreview?
     var csvData: Data?
@@ -202,18 +273,23 @@ struct CSVImportView: View {
                 let loaded = try await Task.detached(priority: .userInitiated) {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                    let bytes = values.fileSize ?? 0
                     guard bytes <= PDFStatementImporter.maxBytes else { throw PDFStatementError.tooLarge }
                     guard bytes <= remaining else { throw StatementUploadError.batchTooLarge }
                     let data = try Data(contentsOf: url)
                     guard data.count <= remaining, data.count <= PDFStatementImporter.maxBytes else { throw StatementUploadError.batchTooLarge }
                     if url.pathExtension.lowercased() == "pdf" || data.starts(with: Data("%PDF-".utf8)) {
-                        return LoadedStatement(bytes: data.count, pdf: try PDFStatementImporter.preview(data: data), csv: nil)
+                        return LoadedStatement(bytes: data.count, modifiedAt: values.contentModificationDate, pdf: try PDFStatementImporter.preview(data: data), csv: nil)
                     }
-                    return LoadedStatement(bytes: data.count, pdf: nil, csv: data)
+                    return LoadedStatement(bytes: data.count, modifiedAt: values.contentModificationDate, pdf: nil, csv: data)
                 }.value
                 file.byteCount = loaded.bytes
-                if let pdf = loaded.pdf { file.pdf = pdf; file.rows = pdf.rows }
+                if let pdf = loaded.pdf {
+                    let inference = StatementPeriodInference.infer(filename: file.name, referenceDate: loaded.modifiedAt ?? .now)
+                    file.periodKind = inference.kind; file.endingOn = inference.endingOn; file.periodInference = inference.message
+                    file.pdf = pdf; file.rows = pdf.rows
+                }
                 else if let csv = loaded.csv {
                     file.csvData = csv
                     file.csvPreview = try CSVImporter.preview(data: csv)
@@ -252,7 +328,7 @@ struct CSVImportView: View {
     }
 }
 
-private struct LoadedStatement: Sendable { let bytes: Int; let pdf: PDFStatementPreview?; let csv: Data? }
+private struct LoadedStatement: Sendable { let bytes: Int; let modifiedAt: Date?; let pdf: PDFStatementPreview?; let csv: Data? }
 private struct PendingStatementUpload { let key: String; let values: [ImportedTransaction]; let duplicates: Int }
 
 struct StatementFileReview: View {
@@ -267,8 +343,14 @@ struct StatementFileReview: View {
                     ForEach(accounts) { Text("\($0.label) · \($0.currencyCode)").tag(Optional($0.id)) }
                 }
                 if file.pdf != nil {
-                    DatePicker("Statement closing date", selection: $file.endingOn, displayedComponents: .date).environment(\.timeZone, .gmt)
-                    Text("Confirm the closing date: it supplies missing years. Numeric dates use month/day order.").font(.caption).foregroundStyle(.secondary)
+                    Picker("Statement type", selection: $file.periodKind) { ForEach(StatementPeriodKind.allCases) { Text($0.title).tag($0) } }
+                    if file.periodKind == .monthly {
+                        DatePicker("Statement month", selection: $file.endingOn, displayedComponents: .date).environment(\.timeZone, .gmt)
+                    } else {
+                        Picker("Statement year", selection: statementYear) { ForEach(statementYears, id: \.self) { Text(String($0)).tag($0) } }
+                    }
+                    Text(file.periodInference).font(.caption).foregroundStyle(.secondary)
+                    Text("The confirmed period supplies missing years in transaction dates. Numeric dates use month/day order.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let preview = file.csvPreview, file.mapping != nil {
@@ -323,12 +405,20 @@ struct StatementFileReview: View {
         }
         .navigationTitle("Preview transactions").navigationBarTitleDisplayMode(.inline)
         .onChange(of: file.accountID) { _, _ in file.reviewed = false }
+        .onChange(of: file.periodKind) { _, kind in file.endingOn = StatementPeriodInference.normalized(file.endingOn, for: kind); file.reviewed = false }
         .onChange(of: file.endingOn) { _, _ in file.reviewed = false }
         .onChange(of: file.rows) { _, _ in file.reviewed = false }
         .onChange(of: file.mapping) { _, _ in file.reviewed = false; file.rows = []; file.error = "Apply the new mapping to preview transactions." }
     }
     private var validationError: String? {
         do { _ = try StatementBatch.prepare([file], accounts: accounts); return nil } catch { return error.localizedDescription }
+    }
+    private var statementYears: [Int] { let current = Calendar(identifier: .gregorian).component(.year, from: .now); return Array(stride(from: current + 1, through: 2000, by: -1)) }
+    private var statementYear: Binding<Int> {
+        Binding(get: { Calendar(identifier: .gregorian).component(.year, from: file.endingOn) }, set: { year in
+            var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+            file.endingOn = calendar.date(from: DateComponents(year: year, month: 12, day: 31))!
+        })
     }
     private func map(_ key: WritableKeyPath<CSVMapping, String>) -> Binding<String> { Binding(get: { file.mapping?[keyPath: key] ?? "" }, set: { file.mapping?[keyPath: key] = $0 }) }
     private func optionalMap(_ key: WritableKeyPath<CSVMapping, String?>) -> Binding<String?> { Binding(get: { file.mapping?[keyPath: key] }, set: { file.mapping?[keyPath: key] = $0 }) }

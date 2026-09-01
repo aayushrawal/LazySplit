@@ -34,7 +34,7 @@ enum PDFStatementError: LocalizedError {
         case .unreadable: "This PDF couldn't be read. Try downloading the statement again or use CSV."
         case .locked: "This PDF is password-protected. Export an unlocked copy from your bank, or use CSV."
         case .tooLarge: "Choose a statement under 25 MB with no more than 50 pages."
-        case .noRows: "No supported transaction rows were found. Try a bank-downloaded PDF or CSV. PDFs must have a numeric date, description, and amount on the same line."
+        case .noRows: "No supported transaction rows were found. Try a bank-downloaded PDF or CSV. PDFs must have a numeric or month-name date, description, and amount on the same line."
         case .invalidSelection: "Check the date, description, and amount for every selected transaction."
         }
     }
@@ -43,7 +43,8 @@ enum PDFStatementError: LocalizedError {
 enum PDFStatementImporter {
     static let maxBytes = 25 * 1024 * 1024
     // Restrict parsing to transaction-shaped rows, not statement balances or summaries.
-    private static let dateToken = #"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?)"#
+    private static let monthName = #"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"#
+    private static let dateToken = #"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?|"# + monthName + #"\s+\d{1,2}(?:,?\s+\d{4})?)"#
     private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?)\s*$"#
 
     static func preview(data: Data) throws -> PDFStatementPreview {
@@ -140,16 +141,34 @@ enum PDFStatementImporter {
     static func date(_ value: String, endingOn: Date) -> Date? {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .gmt
-        let parts = value.split(separator: value.contains("-") ? "-" : "/").compactMap { Int($0) }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let namedPattern = #"^("# + monthName + #")\s+(\d{1,2})(?:,?\s+(\d{4}))?$"#
+        if let regex = try? NSRegularExpression(pattern: namedPattern, options: .caseInsensitive),
+           let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+           let monthRange = Range(match.range(at: 1), in: trimmed),
+           let dayRange = Range(match.range(at: 2), in: trimmed) {
+            let key = trimmed[monthRange].prefix(3).lowercased()
+            let months = ["jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12]
+            guard let month = months[key], let day = Int(trimmed[dayRange]) else { return nil }
+            var year = calendar.component(.year, from: endingOn)
+            if match.range(at: 3).location != NSNotFound, let yearRange = Range(match.range(at: 3), in: trimmed) { year = Int(trimmed[yearRange]) ?? year }
+            else if month > calendar.component(.month, from: endingOn) { year -= 1 }
+            return validDate(year: year, month: month, day: day, calendar: calendar)
+        }
+        let parts = trimmed.split(separator: trimmed.contains("-") ? "-" : "/").compactMap { Int($0) }
         guard parts.count == 2 || parts.count == 3 else { return nil }
         var year = calendar.component(.year, from: endingOn)
         let month: Int, day: Int
-        if value.contains("-") { guard parts.count == 3 else { return nil }; year = parts[0]; month = parts[1]; day = parts[2] }
+        if trimmed.contains("-") { guard parts.count == 3 else { return nil }; year = parts[0]; month = parts[1]; day = parts[2] }
         else {
             month = parts[0]; day = parts[1]
             if parts.count == 3 { year = parts[2] < 100 ? 2000 + parts[2] : parts[2] }
             else if month > calendar.component(.month, from: endingOn) { year -= 1 }
         }
+        return validDate(year: year, month: month, day: day, calendar: calendar)
+    }
+
+    private static func validDate(year: Int, month: Int, day: Int, calendar: Calendar) -> Date? {
         let components = DateComponents(year: year, month: month, day: day)
         guard let date = calendar.date(from: components), calendar.dateComponents([.year, .month, .day], from: date) == components else { return nil }
         return date
