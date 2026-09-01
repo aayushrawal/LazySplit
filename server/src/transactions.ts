@@ -4,13 +4,30 @@ import { z } from "zod";
 import { requireUser } from "./auth.js";
 import { pool, transaction } from "./db.js";
 
-const importedTransaction = z.object({
+export const importedTransactionSchema = z.object({
+  accountID: z.string().uuid().optional(),
   id: z.string().uuid(), accountName: z.string().min(1), accountMask: z.string().default(""), merchant: z.string().min(1),
   originalDescription: z.string().default(""), date: z.string().datetime(), amountMinor: z.number().int().positive(),
   currencyCode: z.string().length(3), fingerprint: z.string().min(1), isCredit: z.boolean().default(false)
 });
+export const manualAccountSchema = z.object({ id: z.string().uuid(), name: z.string().trim().min(1).max(80), mask: z.string().regex(/^(\d{4})?$/).default(""), currencyCode: z.enum(["USD", "CAD", "EUR", "GBP", "AUD", "INR", "SGD", "CHF"]) });
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
+  app.post("/v1/accounts", { preHandler: requireUser }, async (request) => {
+    const body = manualAccountSchema.parse(request.body);
+    return transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["manual-account:" + request.userID]);
+      const existing = await client.query<{ id: string; name: string; mask: string; currencyCode: string }>(
+        `SELECT id,COALESCE(nickname,name) AS name,COALESCE(mask,'') AS mask,currency_code AS "currencyCode" FROM accounts
+         WHERE user_id=$1 AND (id=$2 OR (connection_id IS NULL AND name=$3 AND COALESCE(mask,'')=$4 AND currency_code=$5)) LIMIT 1`,
+        [request.userID, body.id, body.name, body.mask, body.currencyCode]);
+      if (existing.rows[0]) return { account: existing.rows[0] };
+      const created = await client.query(
+        `INSERT INTO accounts(id,user_id,name,mask,currency_code) VALUES($1,$2,$3,$4,$5)
+         RETURNING id,name,mask,currency_code AS "currencyCode"`, [body.id, request.userID, body.name, body.mask, body.currencyCode]);
+      return { account: created.rows[0] };
+    });
+  });
   app.get("/v1/transactions", { preHandler: requireUser }, async (request) => {
     const query = z.object({ state: z.string().optional(), account: z.string().uuid().optional(), before: z.string().optional(), cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(500).default(200) }).parse(request.query);
     const values: unknown[] = [request.userID]; let where = "t.user_id=$1";
@@ -42,25 +59,33 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/v1/transactions/import", { preHandler: requireUser }, async (request) => {
-    const body = z.object({ idempotencyKey: z.string().min(8), transactions: z.array(importedTransaction).max(10_000) }).parse(request.body);
+    const body = z.object({ idempotencyKey: z.string().min(8), transactions: z.array(importedTransactionSchema).max(10_000) }).parse(request.body);
     return transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["import:" + request.userID]);
       const existingKey = await client.query<{ response: { inserted: number; duplicates: number } }>("SELECT response FROM idempotency_keys WHERE user_id=$1 AND idempotency_key=$2", [request.userID, body.idempotencyKey]);
       if (existingKey.rows[0]?.response) return existingKey.rows[0].response;
       let inserted = 0, duplicates = 0;
       for (const item of body.transactions) {
-        const found = await client.query<{ id: string }>("SELECT id FROM accounts WHERE user_id=$1 AND name=$2 AND COALESCE(mask,'')=$3 LIMIT 1", [request.userID, item.accountName, item.accountMask]);
-        let accountID = found.rows[0]?.id;
+        let accountID = item.accountID;
+        if (accountID) {
+          const owned = await client.query<{ currency_code: string }>("SELECT currency_code FROM accounts WHERE id=$1 AND user_id=$2", [accountID, request.userID]);
+          if (!owned.rows[0]) throw Object.assign(new Error("Account not found."), { statusCode: 404 });
+          if (owned.rows[0].currency_code !== item.currencyCode) throw Object.assign(new Error("Statement currency must match the selected account."), { statusCode: 422 });
+        } else {
+          const found = await client.query<{ id: string }>("SELECT id FROM accounts WHERE user_id=$1 AND name=$2 AND COALESCE(mask,'')=$3 LIMIT 1", [request.userID, item.accountName, item.accountMask]);
+          accountID = found.rows[0]?.id;
+        }
         if (!accountID) {
           const created = await client.query<{ id: string }>("INSERT INTO accounts(user_id,name,mask,currency_code) VALUES($1,$2,$3,$4) RETURNING id", [request.userID, item.accountName, item.accountMask, item.currencyCode]);
           accountID = created.rows[0]!.id;
         }
+        const fingerprint = item.accountID ? canonicalFingerprint(accountID, item.date, item.amountMinor, item.merchant) : item.fingerprint;
         const result = await client.query(
           `INSERT INTO transactions(id,user_id,account_id,source,merchant,original_description,transaction_date,amount_minor,currency_code,pending,review_state,fingerprint,is_credit)
            SELECT $1,$2,$3,'csv',$4,$5,$6,$7,$8,false,'needsReview',$9,$10
            WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE user_id=$2 AND fingerprint=$9 AND is_credit=$10)
            ON CONFLICT(id) DO NOTHING RETURNING id`,
-          [item.id, request.userID, accountID, item.merchant, item.originalDescription, item.date.slice(0,10), item.amountMinor, item.currencyCode, item.fingerprint, item.isCredit]);
+          [item.id, request.userID, accountID, item.merchant, item.originalDescription, item.date.slice(0,10), item.amountMinor, item.currencyCode, fingerprint, item.isCredit]);
         result.rowCount ? inserted++ : duplicates++;
       }
       const response = { inserted, duplicates };
@@ -99,7 +124,8 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
          WHERE user_id=$1 AND status='active' GROUP BY provider`, [request.userID]),
       pool.query(
         `SELECT a.id,COALESCE(a.nickname,a.name) AS name,a.name AS "providerName",COALESCE(a.mask,'') AS mask,a.currency_code AS "currencyCode",
-         (pc.provider='plaid' AND pc.status='active') AS connected,
+         COALESCE(pc.provider='plaid' AND pc.status='active',false) AS connected,
+         (a.connection_id IS NULL) AS "isManual",
          COALESCE(bool_or(t.source='plaid'),false) AS "hasPlaidHistory",
          COALESCE(bool_or(t.source='csv'),false) AS "hasStatementHistory",
          count(t.id)::integer AS "transactionCount",max(t.transaction_date)::date AS "lastTransactionDate"
@@ -122,5 +148,5 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
 
 export function canonicalFingerprint(account: string, date: string, amountMinor: number, merchant: string): string {
   const normalized = merchant.normalize("NFKD").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-  return createHash("sha256").update(`${account}|${date.slice(0,10)}|${amountMinor}|${normalized}`).digest("hex");
+  return createHash("sha256").update(`${account.toLowerCase()}|${date.slice(0,10)}|${amountMinor}|${normalized}`).digest("hex");
 }

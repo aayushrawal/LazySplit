@@ -5,6 +5,43 @@ import PDFKit
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testStatementBatchRequiresReviewAccountsAndMatchingCurrency() throws {
+        let account = StatementAccount(id: UUID(), name: "Apple Card", mask: "1234", currencyCode: "USD")
+        var row = PDFStatementRow(rawDate: "08/31/2026", originalLine: "08/31 Coffee 10.00", page: 1, merchant: "Coffee", amountText: "10.00", isCredit: false,
+            editedDate: ISO8601DateFormatter().date(from: "2026-08-31T00:00:00Z"))
+        var file = StagedStatement(name: "August.pdf", accountID: account.id, rows: [row], reviewed: false)
+        XCTAssertThrowsError(try StatementBatch.prepare([file], accounts: [account]))
+        file.reviewed = true
+        let first = try StatementBatch.prepare([file], accounts: [account])
+        XCTAssertEqual(first.values.count, 1)
+        XCTAssertEqual(first.values[0].accountID, account.id)
+        XCTAssertEqual(first.values[0].amountMinor, 1_000)
+        let duplicate = try StatementBatch.prepare([file, file], accounts: [account])
+        XCTAssertEqual(duplicate.values.count, 1)
+        XCTAssertEqual(duplicate.duplicates, 1)
+        row.currencyCode = "EUR"; file.rows = [row]
+        XCTAssertThrowsError(try StatementBatch.prepare([file], accounts: [account]))
+        file.accountID = UUID(); file.rows[0].currencyCode = nil
+        XCTAssertThrowsError(try StatementBatch.prepare([file], accounts: [account]))
+    }
+
+    func testPartsSplittingUsesWeightedSharesAndCentSafeRounding() {
+        let twoToOne = SplitCalculator.weighted(totalMinor: 10_000, friendParts: [(42, 2)], selfParts: 1)
+        XCTAssertEqual(twoToOne.friends[42], 6_667)
+        XCTAssertEqual(twoToOne.selfAmount, 3_333)
+        let several = SplitCalculator.weighted(totalMinor: 10_001, friendParts: [(1, 2), (2, 1)], selfParts: 2)
+        XCTAssertEqual(several.friends[1], 4_001)
+        XCTAssertEqual(several.friends[2], 2_000)
+        XCTAssertEqual(several.selfAmount, 4_000)
+        XCTAssertEqual(several.friends.values.reduce(0, +) + several.selfAmount, 10_001)
+        let equal = SplitCalculator.equal(totalMinor: 100, friendIDs: [1, 2])
+        XCTAssertEqual(equal.friends, [1: 34, 2: 33])
+        XCTAssertEqual(equal.selfAmount, 33)
+        XCTAssertEqual(SplitCalculator.exactMinor("66.67"), 6_667)
+        XCTAssertNil(SplitCalculator.exactMinor("66.666"))
+        XCTAssertNil(SplitCalculator.exactMinor("0"))
+    }
+
     func testPDFRowsCreditsAndUnsupportedBalanceColumns() throws {
         let preview = PDFStatementImporter.parse(pages: ["""
         Statement closing date 01/15/2026
@@ -93,7 +130,9 @@ final class CSVImporterTests: XCTestCase {
         window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
         defer { window.isHidden = true; previous?.makeKeyAndVisible() }
         for (name, scheme, size) in [("light", ColorScheme.light, DynamicTypeSize.large), ("dark", .dark, .large), ("large-text", .light, .accessibility3)] {
-            window.rootViewController = UIHostingController(rootView: NavigationStack { CSVImportView(pdf: sample) }
+            let file = StagedStatement(name: "August.pdf", accountID: UUID(), rows: sample.rows, pdf: sample)
+            let account = StatementAccount(id: file.accountID!, name: "Apple Card", mask: "1234", currencyCode: "USD")
+            window.rootViewController = UIHostingController(rootView: NavigationStack { StatementFileReview(file: .constant(file), accounts: [account]) }
                 .environment(session).modelContainer(container).environment(\.colorScheme, scheme).environment(\.dynamicTypeSize, size))
             window.makeKeyAndVisible()
             try await Task.sleep(for: .milliseconds(500))
@@ -102,6 +141,23 @@ final class CSVImporterTests: XCTestCase {
             let attachment = XCTAttachment(image: image); attachment.name = "pdf-import-\(name)"; attachment.lifetime = .keepAlways; add(attachment)
             XCTAssertEqual(image.size.width, 393)
         }
+    }
+
+    @MainActor func testPartsSplitEditorRendering() async throws {
+        let container = try ModelContainer(for: TransactionRecord.self, SplitDraft.self, SplitParticipant.self, SuggestionRule.self, ImportBatch.self, ExportAttempt.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let session = AppSession(); session.isDemoMode = true
+        session.demoFriends = [SplitwiseFriend(id: 42, firstName: "Alex", lastName: "Friend")]
+        let transaction = TransactionRecord(source: .plaid, accountName: "Card", merchant: "Dinner", date: .now, amountMinor: 10_000, isDemo: true)
+        container.mainContext.insert(transaction)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene); window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        window.rootViewController = UIHostingController(rootView: NavigationStack { SplitEditorView(transaction: transaction, initialMode: .parts, initialSelected: [42]) }.environment(session).modelContainer(container))
+        window.makeKeyAndVisible(); try await Task.sleep(for: .milliseconds(700)); window.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        let attachment = XCTAttachment(image: image); attachment.name = "split-by-parts"; attachment.lifetime = .keepAlways; add(attachment)
+        XCTAssertEqual(image.size.width, 393)
     }
 
     @MainActor func testDemoFriendsStartEmptyAndResetWhenLeavingDemo() {

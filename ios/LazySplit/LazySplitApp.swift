@@ -47,6 +47,7 @@ final class AppSession {
     var isAuthenticated = KeychainStore.read("sessionToken") != nil
     var isDemoMode = false
     var demoFriends: [SplitwiseFriend] = []
+    var demoAccounts: [StatementAccount] = []
     var onboardingStep: OnboardingStep = .welcome
     var lastError: String?
     var isRefreshingTransactions = false
@@ -132,6 +133,7 @@ final class AppSession {
     }
 
     func useDemoMode() {
+        demoAccounts = []
         demoFriends = []
         KeychainStore.delete("sessionToken")
         isDemoMode = true
@@ -140,6 +142,7 @@ final class AppSession {
     }
 
     func completeAuthentication() {
+        demoAccounts = []
         demoFriends = []
         isDemoMode = false
         isAuthenticated = true
@@ -147,6 +150,7 @@ final class AppSession {
     }
 
     func signOut() {
+        demoAccounts = []
         demoFriends = []
         KeychainStore.delete("sessionToken")
         isDemoMode = false

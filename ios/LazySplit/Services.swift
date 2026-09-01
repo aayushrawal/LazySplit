@@ -148,6 +148,11 @@ actor APIClient {
         let _: EmptyResponse = try await request("/v1/accounts/\(id.uuidString)", method: "PATCH", body: ["nickname": nickname])
     }
 
+    func createManualAccount(_ account: StatementAccount) async throws -> StatementAccount {
+        let response: ManualAccountResponse = try await request("/v1/accounts", method: "POST", body: account)
+        return response.account
+    }
+
     func setReview(id: UUID, state: ReviewState) async throws {
         let _: EmptyResponse = try await request("/v1/transactions/\(id.uuidString)/review", method: "PATCH", body: ["state": state.rawValue])
     }
@@ -355,6 +360,7 @@ struct ConnectedAccountSummary: Identifiable, Decodable {
     let hasStatementHistory: Bool
     let transactionCount: Int
     let lastTransactionDate: Date?
+    var isManual: Bool? = nil
 }
 struct PublishParticipant: Encodable, Sendable { let userID: Int; let owedMinor: Int; let paidMinor: Int }
 struct PublishBody: Encodable, Sendable { let draftID: UUID; let transactionID: UUID; let merchant: String; let date: Date; let amountMinor: Int; let currencyCode: String; let groupID: Int?; let participants: [PublishParticipant] }
@@ -368,7 +374,8 @@ struct RemoteTransaction: Decodable {
     let state: ReviewState; let category: String?; let fingerprint: String; let possibleDuplicateID: UUID?
 }
 private struct TransactionsResponse: Decodable { let transactions: [RemoteTransaction]; let nextCursor: UUID? }
-struct ImportedTransaction: Encodable, Sendable { let id: UUID; let accountName: String; let accountMask: String; let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String; let fingerprint: String; let isCredit: Bool }
+struct ImportedTransaction: Encodable, Sendable { let id: UUID; let accountName: String; let accountMask: String; let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String; let fingerprint: String; let isCredit: Bool; var accountID: UUID? = nil }
+private struct ManualAccountResponse: Decodable { let account: StatementAccount }
 private struct ImportBody: Encodable, Sendable { let idempotencyKey: String; let transactions: [ImportedTransaction] }
 struct ImportResponse: Decodable { let inserted: Int; let duplicates: Int }
 private struct ConnectResponse: Decodable { let url: String }

@@ -20,6 +20,42 @@ enum ReviewState: String, Codable, CaseIterable, Identifiable {
 
 enum TransactionSource: String, Codable { case plaid, csv }
 
+enum SplitMode: String, CaseIterable, Identifiable {
+    case equal, exact, parts
+    var id: String { rawValue }
+    var title: String { self == .equal ? "Equal" : self == .exact ? "Amount" : "Parts" }
+}
+
+enum SplitCalculator {
+    static func exactMinor(_ value: String) -> Int? {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.range(of: "^[0-9]+(?:\\.[0-9]{1,2})?$", options: .regularExpression) != nil,
+              let decimal = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")), decimal > 0 else { return nil }
+        return NSDecimalNumber(decimal: decimal * 100).intValue
+    }
+
+    static func equal(totalMinor: Int, friendIDs: [Int]) -> (friends: [Int: Int], selfAmount: Int) {
+        weighted(totalMinor: totalMinor, friendParts: friendIDs.map { ($0, 1) }, selfParts: 1)
+    }
+
+    static func weighted(totalMinor: Int, friendParts: [(Int, Int)], selfParts: Int) -> (friends: [Int: Int], selfAmount: Int) {
+        guard totalMinor >= 0, selfParts > 0, friendParts.allSatisfy({ $0.1 > 0 }) else { return ([:], totalMinor) }
+        let totalParts = selfParts + friendParts.reduce(0) { $0 + $1.1 }
+        guard totalParts > 0 else { return ([:], totalMinor) }
+        let base = totalMinor / totalParts
+        var remainder = totalMinor % totalParts
+        var amounts = [Int: Int]()
+        // Allocate indivisible cents deterministically to selected friends first. For 2:1 on $100 this yields $66.67 / $33.33.
+        for (id, parts) in friendParts {
+            let extra = min(remainder, parts)
+            amounts[id] = base * parts + extra
+            remainder -= extra
+        }
+        let friendsTotal = amounts.values.reduce(0, +)
+        return (amounts, totalMinor - friendsTotal)
+    }
+}
+
 @Model
 final class TransactionRecord {
     @Attribute(.unique) var id: UUID

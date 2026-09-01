@@ -1,0 +1,375 @@
+import SwiftUI
+import SwiftData
+import UniformTypeIdentifiers
+import CryptoKit
+
+struct StatementAccount: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID
+    var name: String
+    var mask: String
+    var currencyCode: String
+    var label: String { mask.isEmpty ? name : "\(name) • \(mask)" }
+    static let currencies = ["USD", "CAD", "EUR", "GBP", "AUD", "INR", "SGD", "CHF"]
+}
+
+struct StagedStatement: Identifiable {
+    let id = UUID()
+    var name: String
+    var accountID: UUID?
+    var endingOn = Date.now
+    var rows: [PDFStatementRow] = []
+    var pdf: PDFStatementPreview?
+    var csvData: Data?
+    var csvPreview: CSVPreview?
+    var mapping: CSVMapping?
+    var warning: String?
+    var error: String?
+    var reviewed = false
+    var byteCount = 0
+
+    @MainActor mutating func previewCSV() {
+        reviewed = false; rows = []; error = nil
+        guard let csvData, var mapping else { return }
+        // The account is selected explicitly, never taken from an arbitrary statement column.
+        mapping.accountColumn = nil
+        do {
+            let (records, duplicates) = try CSVImporter.transactions(data: csvData, mapping: mapping, fallbackAccount: "Preview", knownFingerprints: [])
+            rows = records.map { record in
+                PDFStatementRow(rawDate: record.date.formatted(Date.FormatStyle(date: .numeric, time: .omitted, timeZone: .gmt)), originalLine: record.originalDescription, page: 1, merchant: record.merchant,
+                    amountText: NSDecimalNumber(decimal: record.amount).stringValue, isCredit: record.isCredit, editedDate: record.date,
+                    currencyCode: mapping.currencyColumn == nil ? nil : record.currencyCode)
+            }
+            let text = String(data: csvData, encoding: .utf8) ?? String(data: csvData, encoding: .isoLatin1) ?? ""
+            let count = CSVImporter.parse(text).dropFirst().filter { !$0.allSatisfy(\.isEmpty) }.count
+            warning = "\(records.count) transactions recognized; \(duplicates) exact duplicate rows skipped; \(max(0, count - records.count - duplicates)) rows could not be read. Check the mapping and compare the full preview with your statement."
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+enum StatementBatch {
+    static func fingerprint(account: UUID, date: Date, minor: Int, merchant: String) -> String {
+        let day = ISO8601DateFormatter.string(from: date, timeZone: .gmt, formatOptions: [.withFullDate])
+        let normalized = merchant.decomposedStringWithCompatibilityMapping.replacingOccurrences(of: "[^a-zA-Z0-9]", with: "", options: .regularExpression).lowercased()
+        return SHA256.hash(data: Data("\(account.uuidString.lowercased())|\(day)|\(minor)|\(normalized)".utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func prepare(_ files: [StagedStatement], accounts: [StatementAccount]) throws -> (values: [ImportedTransaction], duplicates: Int) {
+        guard !files.isEmpty, files.count <= 20 else { throw StatementUploadError.invalidBatch }
+        var values: [ImportedTransaction] = [], seen = Set<String>(), duplicates = 0
+        for file in files {
+            guard file.reviewed, file.error == nil, let account = accounts.first(where: { $0.id == file.accountID }), !file.rows.filter(\.included).isEmpty else { throw StatementUploadError.reviewRequired }
+            for row in file.rows where row.included {
+                guard let date = row.date(endingOn: file.endingOn), let minor = PDFStatementImporter.minorUnits(row.amountText), !row.merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PDFStatementError.invalidSelection }
+                guard row.currencyCode == nil || row.currencyCode == account.currencyCode else { throw StatementUploadError.currencyMismatch }
+                let fingerprint = fingerprint(account: account.id, date: date, minor: minor, merchant: row.merchant)
+                let key = fingerprint + (row.isCredit ? ":credit" : ":charge")
+                guard seen.insert(key).inserted else { duplicates += 1; continue }
+                values.append(ImportedTransaction(id: row.id, accountName: account.name, accountMask: account.mask, merchant: row.merchant, originalDescription: row.merchant, date: date,
+                    amountMinor: minor, currencyCode: account.currencyCode, fingerprint: fingerprint, isCredit: row.isCredit, accountID: account.id))
+            }
+        }
+        guard !values.isEmpty, values.count <= 1000 else { throw StatementUploadError.invalidBatch }
+        return (values, duplicates)
+    }
+}
+
+enum StatementUploadError: LocalizedError {
+    case invalidBatch, reviewRequired, currencyMismatch, batchTooLarge
+    var errorDescription: String? {
+        switch self {
+        case .invalidBatch: "Choose up to 20 files and 1,000 transactions per batch."
+        case .reviewRequired: "Open and review every statement, choose its account, and fix or remove failed files before importing."
+        case .currencyMismatch: "A transaction currency differs from its account. Choose an account with the matching currency or exclude that transaction."
+        case .batchTooLarge: "A batch can contain up to 50 MB of statements. Start another upload for the remaining files."
+        }
+    }
+}
+
+// Retains the existing entry-point name; CSV and PDF now share one staged review workflow.
+struct CSVImportView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AppSession.self) private var session
+    @State private var accounts: [StatementAccount] = []
+    @State private var defaultAccountID: UUID?
+    @State private var files: [StagedStatement] = []
+    @State private var picker = false
+    @State private var bulk = false
+    @State private var manualAccount = false
+    @State private var loading = false
+    @State private var progress = ""
+    @State private var message: String?
+    @State private var confirming = false
+    @State private var importing = false
+    @State private var pending: PendingStatementUpload?
+    let initialAccount: StatementAccount?
+
+    init(account: StatementAccount? = nil, pdf: PDFStatementPreview? = nil) {
+        initialAccount = account
+        _defaultAccountID = State(initialValue: account?.id)
+        if let pdf { _files = State(initialValue: [StagedStatement(name: "PDF statement", accountID: account?.id, rows: pdf.rows, pdf: pdf)]) }
+    }
+
+    private var prepared: (values: [ImportedTransaction], duplicates: Int)? { try? StatementBatch.prepare(files, accounts: accounts) }
+
+    var body: some View {
+        List {
+            Group {
+                Section {
+                    Picker("Default account for new files", selection: $defaultAccountID) {
+                        Text("Choose an account").tag(UUID?.none)
+                        ForEach(accounts) { Text("\($0.label) · \($0.currencyCode)").tag(Optional($0.id)) }
+                    }
+                    Button { manualAccount = true } label: { Label("Add account manually", systemImage: "creditcard.badge.plus") }
+                } header: { Text("Destination account") } footer: { Text("For Apple Card or another card without a bank connection, add a manual account. You can change the destination for each statement in its preview.") }
+                Section {
+                    Button { bulk = false; picker = true } label: { Label("Upload one statement", systemImage: "doc.badge.plus") }
+                    Button { bulk = true; picker = true } label: { Label("Bulk upload statements", systemImage: "doc.on.doc") }
+                    if loading { ProgressView(progress) }
+                } header: { Text("Upload statements") } footer: { Text("CSV and PDF • up to 20 files / 50 MB per batch. Files are read on-device; nothing is added until you approve the batch.") }
+                if !files.isEmpty {
+                    Section {
+                        ForEach($files) { $file in
+                            NavigationLink {
+                                StatementFileReview(file: $file, accounts: accounts)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(file.name).lineLimit(2)
+                                    Text(accounts.first { $0.id == file.accountID }?.label ?? "Choose an account").font(.caption).foregroundStyle(.secondary)
+                                    Label(file.error != nil ? "Needs attention" : file.reviewed ? "Reviewed · \(file.rows.filter(\.included).count) selected" : "Tap to preview \(file.rows.count) transactions", systemImage: file.error != nil ? "exclamationmark.triangle" : file.reviewed ? "checkmark.circle.fill" : "eye")
+                                        .font(.caption).foregroundStyle(file.error != nil ? .orange : file.reviewed ? .green : .secondary)
+                                }
+                            }
+                        }.onDelete { files.remove(atOffsets: $0) }
+                    } header: { Text("Preview before adding") } footer: { Text("Open every file to check dates, amounts, payments/refunds, and currency. Swipe to remove a file from this batch. This does not delete your original file.") }
+                }
+            }.disabled(loading || importing || pending != nil)
+            if !files.isEmpty {
+                Section {
+                    if let prepared {
+                        Text("\(prepared.values.count) transactions ready · \(prepared.duplicates) duplicate rows within this batch skipped")
+                    }
+                    if pending != nil {
+                        Button("Retry approved upload") { Task { await submit() } }.disabled(importing)
+                    } else {
+                        Button("Add reviewed transactions") { confirming = true }.disabled(prepared == nil || loading || importing)
+                    }
+                    if importing { ProgressView("Adding reviewed transactions…") }
+                } footer: { Text("This adds transactions to LazySplit only. Publishing to Splitwise is a separate approval.") }
+            }
+            if let message { Section { Text(message).foregroundStyle(.secondary) } }
+        }
+        .navigationTitle("Upload statements").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(importing) } }
+        .interactiveDismissDisabled(importing)
+        .confirmationDialog("Add \(prepared?.values.count ?? 0) reviewed transactions to LazySplit?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Add transactions") {
+                guard let prepared else { return }
+                pending = PendingStatementUpload(key: UUID().uuidString, values: prepared.values, duplicates: prepared.duplicates)
+                Task { await submit() }
+            }
+        }
+        .fileImporter(isPresented: $picker, allowedContentTypes: [.commaSeparatedText, .plainText, .pdf], allowsMultipleSelection: bulk) { result in
+            switch result {
+            case .success(let urls): Task { await load(urls) }
+            case .failure(let error): message = error.localizedDescription
+            }
+        }
+        .sheet(isPresented: $manualAccount) {
+            NavigationStack { ManualAccountView { account in
+                if !accounts.contains(where: { $0.id == account.id }) { accounts.append(account) }
+                defaultAccountID = account.id
+            } }
+        }
+        .task {
+            if session.isDemoMode { accounts = session.demoAccounts }
+            else {
+                do { accounts = try await session.api.connections().accounts.map { StatementAccount(id: $0.id, name: $0.name, mask: $0.mask, currencyCode: $0.currencyCode) } }
+                catch { message = error.localizedDescription }
+            }
+            if let initialAccount, !accounts.contains(where: { $0.id == initialAccount.id }) { accounts.append(initialAccount) }
+        }
+    }
+
+    @MainActor private func load(_ urls: [URL]) async {
+        guard files.count + urls.count <= 20 else { message = StatementUploadError.invalidBatch.localizedDescription; return }
+        loading = true; message = nil; defer { loading = false }
+        for (index, url) in urls.enumerated() {
+            progress = "Reading file \(index + 1) of \(urls.count)…"
+            var file = StagedStatement(name: url.lastPathComponent, accountID: defaultAccountID)
+            do {
+                let remaining = 50 * 1024 * 1024 - files.reduce(0) { $0 + $1.byteCount }
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    guard bytes <= PDFStatementImporter.maxBytes else { throw PDFStatementError.tooLarge }
+                    guard bytes <= remaining else { throw StatementUploadError.batchTooLarge }
+                    let data = try Data(contentsOf: url)
+                    guard data.count <= remaining, data.count <= PDFStatementImporter.maxBytes else { throw StatementUploadError.batchTooLarge }
+                    if url.pathExtension.lowercased() == "pdf" || data.starts(with: Data("%PDF-".utf8)) {
+                        return LoadedStatement(bytes: data.count, pdf: try PDFStatementImporter.preview(data: data), csv: nil)
+                    }
+                    return LoadedStatement(bytes: data.count, pdf: nil, csv: data)
+                }.value
+                file.byteCount = loaded.bytes
+                if let pdf = loaded.pdf { file.pdf = pdf; file.rows = pdf.rows }
+                else if let csv = loaded.csv {
+                    file.csvData = csv
+                    file.csvPreview = try CSVImporter.preview(data: csv)
+                    file.mapping = file.csvPreview?.suggestedMapping
+                    file.previewCSV()
+                }
+            } catch { file.error = error.localizedDescription }
+            files.append(file)
+        }
+    }
+
+    @MainActor private func submit() async {
+        guard let pending, !importing else { return }
+        importing = true; defer { importing = false }
+        do {
+            let result: ImportResponse
+            if session.isDemoMode {
+                let existing = try modelContext.fetch(FetchDescriptor<TransactionRecord>()).filter(\.isDemo)
+                var seen = Set(existing.map { $0.fingerprint + ($0.isCredit ? ":credit" : ":charge") })
+                var inserted = 0
+                for item in pending.values where seen.insert(item.fingerprint + (item.isCredit ? ":credit" : ":charge")).inserted {
+                    let record = TransactionRecord(id: item.id, source: .csv, accountName: item.accountName, accountMask: item.accountMask, merchant: item.merchant, date: item.date, amountMinor: item.amountMinor, currencyCode: item.currencyCode, fingerprint: item.fingerprint, isDemo: true)
+                    record.accountID = item.accountID; record.isCredit = item.isCredit; modelContext.insert(record); inserted += 1
+                }
+                try modelContext.save()
+                result = ImportResponse(inserted: inserted, duplicates: pending.values.count - inserted)
+            } else {
+                // Server-first: a preview/cancel/failure never creates orphaned local transactions.
+                result = try await session.api.importTransactions(pending.values, idempotencyKey: pending.key)
+                await session.refreshTransactions(in: modelContext)
+            }
+            message = "Added \(result.inserted) transactions; skipped \(result.duplicates + pending.duplicates) exact duplicates."
+            if let error = session.transactionRefreshError { message! += " \(error) Refresh the inbox to download the saved transactions." }
+            files = []; self.pending = nil
+        } catch { message = "Upload did not confirm completion: \(error.localizedDescription) Retry uses the same approved batch to prevent duplicates." }
+    }
+}
+
+private struct LoadedStatement: Sendable { let bytes: Int; let pdf: PDFStatementPreview?; let csv: Data? }
+private struct PendingStatementUpload { let key: String; let values: [ImportedTransaction]; let duplicates: Int }
+
+struct StatementFileReview: View {
+    @Binding var file: StagedStatement
+    let accounts: [StatementAccount]
+    var body: some View {
+        Form {
+            Section("Statement") {
+                Text(file.name)
+                Picker("Account", selection: $file.accountID) {
+                    Text("Choose account").tag(UUID?.none)
+                    ForEach(accounts) { Text("\($0.label) · \($0.currencyCode)").tag(Optional($0.id)) }
+                }
+                if file.pdf != nil {
+                    DatePicker("Statement closing date", selection: $file.endingOn, displayedComponents: .date).environment(\.timeZone, .gmt)
+                    Text("Confirm the closing date: it supplies missing years. Numeric dates use month/day order.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let preview = file.csvPreview, file.mapping != nil {
+                Section("CSV column mapping") {
+                    Picker("Date", selection: map(\.dateColumn)) { ForEach(preview.headers, id: \.self) { Text($0).tag($0) } }
+                    Picker("Description", selection: map(\.descriptionColumn)) { ForEach(preview.headers, id: \.self) { Text($0).tag($0) } }
+                    Picker("Amount", selection: optionalMap(\.amountColumn)) { Text("Debit / credit columns").tag(String?.none); ForEach(preview.headers, id: \.self) { Text($0).tag(Optional($0)) } }
+                    if file.mapping?.amountColumn == nil {
+                        Picker("Debit", selection: optionalMap(\.debitColumn)) { Text("None").tag(String?.none); ForEach(preview.headers, id: \.self) { Text($0).tag(Optional($0)) } }
+                        Picker("Credit", selection: optionalMap(\.creditColumn)) { Text("None").tag(String?.none); ForEach(preview.headers, id: \.self) { Text($0).tag(Optional($0)) } }
+                    }
+                    Picker("Currency", selection: optionalMap(\.currencyColumn)) { Text("Use account currency").tag(String?.none); ForEach(preview.headers, id: \.self) { Text($0).tag(Optional($0)) } }
+                    Button("Apply mapping and rebuild preview") { file.previewCSV() }
+                }
+            }
+            if let error = file.error { Section { Text(error).foregroundStyle(.red) } }
+            if let warning = file.warning { Section { Text(warning).font(.caption).foregroundStyle(.secondary) } }
+            if let pdf = file.pdf {
+                Section {
+                    Text("\(pdf.rows.count) rows found on \(pdf.pageCount) pages. \(pdf.scannedPages) pages used text recognition. Compare against your PDF; extraction may miss transactions or misread amounts.")
+                    if pdf.unmatchedDatedLines > 0 || pdf.pagesWithoutRows > 0 { Text("\(pdf.unmatchedDatedLines) dated lines could not be parsed. \(pdf.pagesWithoutRows) pages had no recognized transactions. Use CSV for unsupported layouts.").foregroundStyle(.orange) }
+                }.font(.caption)
+            }
+            Section("All transactions · \(file.rows.count)") {
+                ForEach($file.rows) { $row in
+                    DisclosureGroup {
+                        TextField("Description", text: $row.merchant)
+                        DatePicker("Date", selection: Binding(get: { row.date(endingOn: file.endingOn) ?? file.endingOn }, set: { row.editedDate = $0 }), displayedComponents: .date).environment(\.timeZone, .gmt)
+                        TextField("Positive amount", text: $row.amountText).keyboardType(.decimalPad)
+                        Toggle("Payment, refund, or credit", isOn: $row.isCredit)
+                        Toggle("Include in import", isOn: $row.included)
+                        if row.date(endingOn: file.endingOn) == nil { Text("Choose a valid date.").foregroundStyle(.red) }
+                        if let currency = row.currencyCode { Text("Statement currency: \(currency)").font(.caption) }
+                        if file.pdf != nil { Text("Page \(row.page): \(row.originalLine)").font(.caption).foregroundStyle(.secondary) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(row.merchant)
+                            Text("\(row.date(endingOn: file.endingOn).map { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt)) } ?? row.rawDate) · \(row.amountText)\(row.isCredit ? " credit" : "")\(row.included ? "" : " · excluded")").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Section {
+                Toggle("I checked the account, dates, currency, amounts, and credits", isOn: $file.reviewed)
+                    .disabled(file.error != nil || file.accountID == nil || file.rows.filter(\.included).isEmpty)
+                if file.reviewed {
+                    if let error = validationError { Text(error).foregroundStyle(.red) }
+                    else { Label("Ready. Go back to approve the batch.", systemImage: "checkmark.circle").foregroundStyle(.green) }
+                }
+            } footer: { Text("Nothing on this screen is saved as a transaction until you approve the batch on the previous screen.") }
+        }
+        .navigationTitle("Preview transactions").navigationBarTitleDisplayMode(.inline)
+        .onChange(of: file.accountID) { _, _ in file.reviewed = false }
+        .onChange(of: file.endingOn) { _, _ in file.reviewed = false }
+        .onChange(of: file.rows) { _, _ in file.reviewed = false }
+        .onChange(of: file.mapping) { _, _ in file.reviewed = false; file.rows = []; file.error = "Apply the new mapping to preview transactions." }
+    }
+    private var validationError: String? {
+        do { _ = try StatementBatch.prepare([file], accounts: accounts); return nil } catch { return error.localizedDescription }
+    }
+    private func map(_ key: WritableKeyPath<CSVMapping, String>) -> Binding<String> { Binding(get: { file.mapping?[keyPath: key] ?? "" }, set: { file.mapping?[keyPath: key] = $0 }) }
+    private func optionalMap(_ key: WritableKeyPath<CSVMapping, String?>) -> Binding<String?> { Binding(get: { file.mapping?[keyPath: key] }, set: { file.mapping?[keyPath: key] = $0 }) }
+}
+
+struct ManualAccountView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppSession.self) private var session
+    let onCreated: (StatementAccount) -> Void
+    @State private var name = ""
+    @State private var mask = ""
+    @State private var currency = "USD"
+    @State private var saving = false
+    @State private var message: String?
+    @State private var accountID = UUID()
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name, e.g. Apple Card", text: $name)
+                TextField("Last four digits (optional)", text: $mask).keyboardType(.numberPad)
+                Picker("Currency", selection: $currency) { ForEach(StatementAccount.currencies, id: \.self) { Text($0).tag($0) } }
+            } header: { Text("Card or account") } footer: { Text("This creates a statement-only account, without Plaid. Upload PDFs or CSVs to add its history. Do not enter your full card number.") }
+            if let message { Text(message).foregroundStyle(.red) }
+        }
+        .navigationTitle("Add manual account").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Add") { Task { await save() } }.disabled(saving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name.count > 80 || (!mask.isEmpty && (mask.count != 4 || mask.range(of: "^[0-9]{4}$", options: .regularExpression) == nil)))
+            }
+        }.interactiveDismissDisabled(saving)
+    }
+    @MainActor private func save() async {
+        saving = true; defer { saving = false }
+        let proposed = StatementAccount(id: accountID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), mask: mask, currencyCode: currency)
+        do {
+            let account: StatementAccount
+            if session.isDemoMode {
+                account = session.demoAccounts.first { $0.name == proposed.name && $0.mask == proposed.mask && $0.currencyCode == proposed.currencyCode } ?? proposed
+                if !session.demoAccounts.contains(where: { $0.id == account.id }) { session.demoAccounts.append(account) }
+            } else { account = try await session.api.createManualAccount(proposed) }
+            onCreated(account); dismiss()
+        } catch { message = error.localizedDescription }
+    }
+}

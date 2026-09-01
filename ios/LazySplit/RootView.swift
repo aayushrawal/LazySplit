@@ -431,11 +431,31 @@ struct SplitEditorView: View {
     @State private var groups: [FriendGroup] = []
     @State private var selected = Set<Int>()
     @State private var exactAmounts = [Int: String]()
-    @State private var exactMode = false
+    @State private var parts = [Int: Int]()
+    @State private var selfParts = 1
+    @State private var splitMode = SplitMode.equal
     @State private var isLoading = false
 
+    init(transaction: TransactionRecord, initialMode: SplitMode = .equal, initialSelected: Set<Int> = []) {
+        self.transaction = transaction
+        _splitMode = State(initialValue: initialMode)
+        _selected = State(initialValue: initialSelected)
+        _parts = State(initialValue: Dictionary(uniqueKeysWithValues: initialSelected.map { ($0, 1) }))
+    }
+
     private var amountIsValid: Bool {
-        !exactMode || selected.reduce(0) { $0 + (Decimal(string: exactAmounts[$1] ?? "") ?? 0) } == transaction.amount
+        guard splitMode == .exact else { return true }
+        let values = selected.compactMap { SplitCalculator.exactMinor(exactAmounts[$0] ?? "") }
+        return values.count == selected.count && values.reduce(0, +) <= transaction.amountMinor
+    }
+    private var calculated: (friends: [Int: Int], selfAmount: Int) {
+        switch splitMode {
+        case .equal: return SplitCalculator.equal(totalMinor: transaction.amountMinor, friendIDs: selected.sorted())
+        case .parts: return SplitCalculator.weighted(totalMinor: transaction.amountMinor, friendParts: selected.sorted().map { ($0, parts[$0] ?? 1) }, selfParts: selfParts)
+        case .exact:
+            let amounts = Dictionary(uniqueKeysWithValues: selected.map { ($0, SplitCalculator.exactMinor(exactAmounts[$0] ?? "") ?? 0) })
+            return (amounts, transaction.amountMinor - amounts.values.reduce(0, +))
+        }
     }
 
     var body: some View {
@@ -464,9 +484,13 @@ struct SplitEditorView: View {
                 if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
             }
             Section {
-                Picker("Split", selection: $exactMode) {
-                    Text("Equally").tag(false); Text("Exact amounts").tag(true)
+                Picker("Split", selection: $splitMode) {
+                    ForEach(SplitMode.allCases) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
+                if splitMode == .parts {
+                    Stepper("Your parts: \(selfParts)", value: $selfParts, in: 1...99)
+                    Text("Give someone 2 parts when they are covering two people's share. Parts are converted to exact amounts with cent-safe rounding.").font(.caption).foregroundStyle(.secondary)
+                }
                 if friends.isEmpty {
                     Label("Add people from Splitwise in the Friends tab to start splitting.", systemImage: "person.2.slash")
                         .font(.subheadline).foregroundStyle(.secondary)
@@ -478,14 +502,24 @@ struct SplitEditorView: View {
                             Text(friend.displayName).foregroundStyle(.primary)
                         }.buttonStyle(.plain)
                         Spacer()
-                        if exactMode && selected.contains(friend.id) {
+                        if splitMode == .exact && selected.contains(friend.id) {
                             TextField("0.00", text: Binding(get: { exactAmounts[friend.id] ?? "" }, set: { exactAmounts[friend.id] = $0 }))
                                 .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90)
+                        } else if splitMode == .parts && selected.contains(friend.id) {
+                            Stepper(value: Binding(get: { parts[friend.id] ?? 1 }, set: { parts[friend.id] = $0 }), in: 1...99) {
+                                VStack(alignment: .trailing) {
+                                    Text("\(parts[friend.id] ?? 1) part\((parts[friend.id] ?? 1) == 1 ? "" : "s")")
+                                    Text(Decimal(calculated.friends[friend.id] ?? 0) / 100, format: .currency(code: transaction.currencyCode)).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }.frame(maxWidth: 180)
+                        } else if selected.contains(friend.id) {
+                            Text(Decimal(calculated.friends[friend.id] ?? 0) / 100, format: .currency(code: transaction.currencyCode)).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
             } header: { Text("Who shared it?") } footer: {
-                if exactMode && !amountIsValid { Text("Exact amounts must add up to the transaction total.").foregroundStyle(.red) }
+                if splitMode == .exact && !amountIsValid { Text("Enter a positive amount for each person. Together they cannot exceed the purchase total.").foregroundStyle(.red) }
+                if !selected.isEmpty && amountIsValid { Text("You pay \(Decimal(calculated.selfAmount) / 100, format: .currency(code: transaction.currencyCode)).") }
             }
             if !groups.isEmpty {
                 Section("Quick groups") {
@@ -509,7 +543,7 @@ struct SplitEditorView: View {
         }
         .navigationTitle("Split expense").navigationBarTitleDisplayMode(.inline)
         .task {
-            if session.isDemoMode { friends = session.demoFriends; applySuggestion(); selected.formIntersection(Set(friends.map(\.id))); return }
+            if session.isDemoMode { friends = session.demoFriends; if selected.isEmpty { applySuggestion() }; selected.formIntersection(Set(friends.map(\.id))); return }
             do {
                 async let liveFriends = session.api.friends()
                 async let liveGroups = session.api.friendGroups()
@@ -522,8 +556,8 @@ struct SplitEditorView: View {
     }
 
     private func toggle(_ id: Int) {
-        if selected.contains(id) { selected.remove(id); exactAmounts.removeValue(forKey: id) }
-        else { selected.insert(id) }
+        if selected.contains(id) { selected.remove(id); exactAmounts.removeValue(forKey: id); parts.removeValue(forKey: id) }
+        else { selected.insert(id); parts[id] = 1 }
     }
     private func applySuggestion() {
         guard let rule = rules.first(where: { $0.normalizedMerchant == TransactionFingerprint.normalize(transaction.merchant) }),
@@ -533,15 +567,9 @@ struct SplitEditorView: View {
     private func approve() {
         guard transaction.canSplit, !selected.isEmpty, amountIsValid else { return }
         let ids = selected.sorted()
-        let owed: [Int]
-        if exactMode { owed = ids.map { NSDecimalNumber(decimal: Decimal(string: exactAmounts[$0] ?? "") ?? 0).multiplying(byPowerOf10: 2).intValue } }
-        else {
-            let count = ids.count + 1
-            let base = transaction.amountMinor / count, remainder = transaction.amountMinor % count
-            owed = ids.enumerated().map { base + ($0.offset < remainder ? 1 : 0) }
-        }
+        let owed = ids.map { calculated.friends[$0] ?? 0 }
         let participants = zip(ids, owed).map { id, amount in SplitParticipant(splitwiseUserID: id, displayName: friends.first(where: { $0.id == id })?.displayName ?? "Friend", owedMinor: amount) }
-        let draft = SplitDraft(transactionID: transaction.id, splitKind: exactMode ? "exact" : "equal", participants: participants)
+        let draft = SplitDraft(transactionID: transaction.id, splitKind: splitMode.rawValue, participants: participants)
         modelContext.insert(draft); modelContext.insert(ExportAttempt(draftID: draft.id)); transaction.state = .queued
         if let existing = rules.first(where: { $0.normalizedMerchant == TransactionFingerprint.normalize(transaction.merchant) }) { existing.confirmations += 1; existing.updatedAt = .now }
         else { modelContext.insert(SuggestionRule(merchant: transaction.merchant, participantIDs: ids, participantNames: participants.map(\.displayName), splitKind: draft.splitKind)) }

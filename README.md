@@ -40,6 +40,14 @@ PDF support is conservative: numeric `MM/DD`, `MM/DD/YYYY`, `MM/DD/YY`, or ISO d
 
 Reviewed PDF rows are normalized in memory through the existing CSV statement import contract and duplicate detection (stored as statement/`csv` records), so no backend migration is needed. The statement file is not stored; only the filename and normalized transaction records are retained. Statement-to-Plaid overlap matching still depends on existing fingerprints and is not guaranteed across issuer naming differences.
 
+Statement import supports **Upload one statement** and **Bulk upload statements** (up to 20 files, 50 MB, and 1,000 reviewed transactions per batch). Every file is staged first: choose its account, inspect all extracted rows, correct or exclude transactions, then explicitly mark the file reviewed. Only a final batch confirmation writes data. A failed or ambiguous request retains the same idempotency key for safe retry. The server validates account ownership and currency and writes the batch transactionally.
+
+Cards without Plaid support, including Apple Card, can use **Cards & Accounts → Add account manually**. Manual accounts store only a name, optional last four digits, and currency—never a full card number—and accept PDF/CSV statement history through the same preview flow. **Upload statement to this account** preselects that card. Plaid overlap reconciliation is account-scoped so a statement cannot be merged into a different card merely because its date, amount, and merchant match.
+
+### Split modes
+
+Splits support **Equal**, **Amount**, and **Parts**. The current user is always included: Amount entries are what friends owe and the user pays the remainder. Parts defaults everyone to one part and allows 1–99 parts per person. Exact cents are allocated deterministically without losing or inventing money; for a $100 purchase with the user at 1 part and a friend at 2 parts, the friend owes $66.67 and the user pays $33.33. Parts are converted into exact owed shares before publishing to Splitwise.
+
 ### Choose your friends
 
 The Friends tab starts empty, even after connecting Splitwise. Use **Add friends from Splitwise** to search and select people, then tap **Add**. Only explicitly added friends appear in LazySplit and the split editor; refreshing never adds anyone automatically. Swipe a friend to remove them from your LazySplit list without deleting their Splitwise friendship, nickname, existing groups, or past expenses. Groups with members outside your list cannot be used for a new split until those members are added again. The selection is saved per signed-in user on the backend; demo selections are separate and reset when leaving demo mode.

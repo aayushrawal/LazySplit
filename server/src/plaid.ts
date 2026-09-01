@@ -265,8 +265,8 @@ async function applyPages(connection: { id: string; user_id: string }, pages: Sy
         const minor = Math.round(Math.abs(item.amount) * 100);
         const fingerprint = createHash("sha256").update(`${accountRow.id}|${item.date}|${minor}|${normalize(merchant)}`).digest("hex");
         const importedMatch = await client.query<{ id: string }>(
-          "SELECT id FROM transactions WHERE user_id=$1 AND source='csv' AND transaction_date=$2 AND amount_minor=$3 AND regexp_replace(lower(merchant),'[^a-z0-9]','','g')=$4 LIMIT 1",
-          [connection.user_id, item.date, minor, normalize(merchant)]);
+          "SELECT id FROM transactions WHERE user_id=$1 AND source='csv' AND transaction_date=$2 AND amount_minor=$3 AND regexp_replace(lower(merchant),'[^a-z0-9]','','g')=$4 AND account_id=$5 AND is_credit=$6 LIMIT 1",
+          [connection.user_id, item.date, minor, normalize(merchant), accountRow.id, item.amount < 0]);
         if (importedMatch.rows[0]) {
           await client.query(
             `UPDATE transactions SET account_id=$1,external_id=$2,source='plaid',merchant=$3,original_description=$4,

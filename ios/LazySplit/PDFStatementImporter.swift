@@ -13,6 +13,7 @@ struct PDFStatementRow: Identifiable, Sendable, Equatable {
     var isCredit: Bool
     var included = true
     var editedDate: Date?
+    var currencyCode: String? = nil
 
     func date(endingOn: Date) -> Date? { editedDate ?? PDFStatementImporter.date(rawDate, endingOn: endingOn) }
 }
