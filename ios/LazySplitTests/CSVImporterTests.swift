@@ -5,6 +5,17 @@ import PDFKit
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testAccountHistoryDefaultsTo48MonthsAndSupportsShorterViews() throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let reference = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 9, day: 15)))
+        let months = AccountHistoryWindow.monthStarts(monthCount: 48, endingAt: reference, calendar: calendar)
+        XCTAssertEqual(months.count, 48)
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: try XCTUnwrap(months.first)), DateComponents(year: 2022, month: 10, day: 1))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: try XCTUnwrap(months.last)), DateComponents(year: 2026, month: 9, day: 1))
+        XCTAssertEqual(AccountHistoryWindow.monthStarts(monthCount: 12, endingAt: reference, calendar: calendar).count, 12)
+        XCTAssertEqual(AccountHistoryWindow.normalized(17), 48)
+    }
+
     @MainActor func testInboxCountBadgeFitsFourDigitCounts() {
         let controller = UIHostingController(rootView: InboxCountBadge(count: 9_999))
         let size = controller.sizeThatFits(in: CGSize(width: 1_000, height: 100))

@@ -200,13 +200,12 @@ private struct AccountHistoryCard: View {
     let account: AccountPresentation
     let onUpload: () -> Void
     let onSync: () -> Void
+    @AppStorage("accounts.historyMonthCount") private var historyMonthCount = 48
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
     private var purchaseTransactions: [TransactionRecord] { account.transactions.filter { !$0.isCredit && $0.amountMinor > 0 } }
     private var years: [AccountCoverageYear] {
         let calendar = Calendar.current
-        let start = calendar.date(byAdding: .month, value: -35, to: calendar.date(from: calendar.dateComponents([.year, .month], from: .now))!)!
-        let months = (0..<36).map { offset in
-            let date = calendar.date(byAdding: .month, value: offset, to: start)!
+        let months = AccountHistoryWindow.monthStarts(monthCount: historyMonthCount, endingAt: .now, calendar: calendar).map { date in
             let rows = purchaseTransactions.filter { calendar.isDate($0.date, equalTo: date, toGranularity: .month) }
             return AccountCoverageMonth(date: date, hasPlaid: rows.contains { $0.source == .plaid }, hasStatement: rows.contains { $0.source == .csv }, count: rows.count)
         }
@@ -242,7 +241,18 @@ private struct AccountHistoryCard: View {
             }
 
             Divider()
-            HStack { Text("Month-by-month history").font(.subheadline.weight(.semibold)); Spacer(); Text("Last 36 months").font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                Text("Month-by-month history").font(.subheadline.weight(.semibold))
+                Spacer()
+                Menu {
+                    Picker("History range", selection: $historyMonthCount) {
+                        ForEach(AccountHistoryWindow.options, id: \.self) { count in Text("Last \(count) months").tag(count) }
+                    }
+                } label: {
+                    Label("\(AccountHistoryWindow.normalized(historyMonthCount)) months", systemImage: "calendar")
+                        .font(.caption.weight(.medium))
+                }.buttonStyle(.borderless)
+            }
             Text("Tap any missing month to upload its statement. Plaid months update when you sync.").font(.caption).foregroundStyle(.secondary)
             ForEach(years) { year in
                 VStack(alignment: .leading, spacing: 8) {
@@ -272,6 +282,21 @@ private struct AccountHistoryCard: View {
                 Label("Missing", systemImage: "circle").foregroundStyle(.secondary)
             }.font(.caption2)
         }.padding(.vertical, 6)
+    }
+}
+
+enum AccountHistoryWindow {
+    static let options = [12, 24, 36, 48]
+
+    static func normalized(_ monthCount: Int) -> Int {
+        options.contains(monthCount) ? monthCount : 48
+    }
+
+    static func monthStarts(monthCount: Int, endingAt date: Date, calendar: Calendar = .current) -> [Date] {
+        let count = normalized(monthCount)
+        guard let current = calendar.date(from: calendar.dateComponents([.year, .month], from: date)),
+              let first = calendar.date(byAdding: .month, value: -(count - 1), to: current) else { return [] }
+        return (0..<count).compactMap { calendar.date(byAdding: .month, value: $0, to: first) }
     }
 }
 
