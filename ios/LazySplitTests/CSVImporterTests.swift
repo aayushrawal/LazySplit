@@ -74,6 +74,33 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertEqual(repeated.1, 5)
     }
 
+    func testAppleCardPDFUsesChargeNotDailyCashAndExcludesPaymentsAndACMI() throws {
+        let preview = PDFStatementImporter.parse(pages: ["""
+        Payments Date Description Amount
+        04/30/2023 ACH Deposit Internet transfer from account ending in 2992 -$176.14
+        Total payments for this period -$176.14
+        Transactions Date Description Daily Cash Amount
+        04/06/2023 APPLE.COM/BILL ONE APPLE PARK WAY 866-712-7753 95014 CA USA 3% $0.60 $19.99
+        04/07/2023 COFFEE SHOP CHICAGO IL USA 2% $0.12 $6.00
+        04/20/2023 GNC #006647 12214 Lakewood Boulevard DOWNEY 90242 CA USA 1% $0.71 $70.81
+        04/22/2023 RETURNED ITEM CUPERTINO CA USA 3% -$0.30 -$10.00
+        Total Daily Cash this month $1.13
+        Total charges, credits and returns $86.80
+        Apple Card Monthly Installments
+        Dates Description Daily Cash Amounts
+        12/17/2022 Apple Online Store Cupertino CA $199.00
+        TRANSACTION #d536b51c444e
+        This month's installment: $8.29
+        Final installment: Dec 31, 2024
+        Total financed $199.00
+        """])
+        XCTAssertEqual(preview.rows.map(\.merchant), ["APPLE.COM/BILL ONE APPLE PARK WAY 866-712-7753 95014 CA USA", "COFFEE SHOP CHICAGO IL USA", "GNC #006647 12214 Lakewood Boulevard DOWNEY 90242 CA USA", "RETURNED ITEM CUPERTINO CA USA"])
+        XCTAssertEqual(preview.rows.map(\.amountText), ["19.99", "6.00", "70.81", "10.00"])
+        XCTAssertEqual(preview.rows.map(\.isCredit), [false, false, false, true])
+        XCTAssertEqual(preview.excludedRows, 2) // ACH payment and the dated ACMI purchase.
+        XCTAssertFalse(preview.rows.contains { $0.merchant.localizedCaseInsensitiveContains("deposit") || $0.merchant.localizedCaseInsensitiveContains("installment") })
+    }
+
     func testPDFDateAndAmountValidation() throws {
         let closing = ISO8601DateFormatter().date(from: "2026-01-15T00:00:00Z")!
         XCTAssertNil(PDFStatementImporter.date("02/30/2026", endingOn: closing))

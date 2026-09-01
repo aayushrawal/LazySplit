@@ -289,6 +289,7 @@ struct StatementFileReview: View {
             if let pdf = file.pdf {
                 Section {
                     Text("\(pdf.rows.count) rows found on \(pdf.pageCount) pages. \(pdf.scannedPages) pages used text recognition. Compare against your PDF; extraction may miss transactions or misread amounts.")
+                    if pdf.excludedRows > 0 { Text("Excluded \(pdf.excludedRows) payment, deposit, or installment row(s). These are not purchase transactions.").foregroundStyle(.secondary) }
                     if pdf.unmatchedDatedLines > 0 || pdf.pagesWithoutRows > 0 { Text("\(pdf.unmatchedDatedLines) dated lines could not be parsed. \(pdf.pagesWithoutRows) pages had no recognized transactions. Use CSV for unsupported layouts.").foregroundStyle(.orange) }
                 }.font(.caption)
             }

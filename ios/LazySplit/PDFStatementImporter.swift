@@ -24,6 +24,7 @@ struct PDFStatementPreview: Sendable {
     let scannedPages: Int
     let unmatchedDatedLines: Int
     let pagesWithoutRows: Int
+    var excludedRows: Int = 0
 }
 
 enum PDFStatementError: LocalizedError {
@@ -70,19 +71,47 @@ enum PDFStatementImporter {
 
     static func parse(pages: [String], scannedPages: Int = 0) -> PDFStatementPreview {
         let regex = try! NSRegularExpression(pattern: rowPattern, options: .caseInsensitive)
+        let appleRegex = try! NSRegularExpression(pattern: #"^\s*("# + dateToken + #")\s+(.+?)\s+(\d+(?:\.\d+)?%)\s+(\(?\s*-?\s*\$\s*\d[\d,]*\.\d{2}\s*\)?(?:\s*CR)?)\s+(\(?\s*-?\s*\$\s*\d[\d,]*\.\d{2}\s*\)?(?:\s*CR)?)\s*$"#, options: .caseInsensitive)
         let startsWithDate = try! NSRegularExpression(pattern: #"^\s*"# + dateToken + #"\s"#)
-        var rows: [PDFStatementRow] = [], unmatched = 0, emptyPages = 0
+        var rows: [PDFStatementRow] = [], unmatched = 0, emptyPages = 0, excluded = 0
         for (index, text) in pages.enumerated() {
             let before = rows.count
+            var appleSection = AppleStatementSection.none
             for raw in text.components(separatedBy: .newlines) {
                 let line = raw.replacingOccurrences(of: "\u{00a0}", with: " ")
+                let normalizedLine = line.trimmingCharacters(in: .whitespaces).lowercased()
+                if normalizedLine == "transactions" || normalizedLine.hasPrefix("transactions date") {
+                    appleSection = .transactions; continue
+                }
+                if normalizedLine == "payments" || normalizedLine.hasPrefix("payments date") {
+                    appleSection = .payments; continue
+                }
+                if normalizedLine.contains("apple card monthly installments") || normalizedLine == "monthly installments" {
+                    appleSection = .installments; continue
+                }
                 let range = NSRange(line.startIndex..., in: line)
+                let dated = startsWithDate.firstMatch(in: line, range: range) != nil
+                if dated && appleSection != .none && appleSection != .transactions {
+                    excluded += 1; continue
+                }
+                if let match = appleRegex.firstMatch(in: line, range: range) {
+                    func appleValue(_ index: Int) -> String { Range(match.range(at: index), in: line).map { String(line[$0]).trimmingCharacters(in: .whitespaces) } ?? "" }
+                    let merchant = appleValue(2), rawAmount = appleValue(5).uppercased()
+                    let amount = rawAmount.replacingOccurrences(of: #"[^0-9.]"#, with: "", options: .regularExpression)
+                    guard minorUnits(amount) != nil else { unmatched += 1; continue }
+                    let credit = rawAmount.contains("CR") || rawAmount.contains("-") || rawAmount.contains("(") || merchant.range(of: #"(?i)\b(refund|credit|reversal|return)\b"#, options: .regularExpression) != nil
+                    rows.append(PDFStatementRow(rawDate: appleValue(1), originalLine: line, page: index + 1, merchant: merchant, amountText: amount, isCredit: credit))
+                    continue
+                }
                 guard let match = regex.firstMatch(in: line, range: range) else {
-                    if startsWithDate.firstMatch(in: line, range: range) != nil { unmatched += 1 }
+                    if dated { unmatched += 1 }
                     continue
                 }
                 func value(_ index: Int) -> String { Range(match.range(at: index), in: line).map { String(line[$0]).trimmingCharacters(in: .whitespaces) } ?? "" }
                 let merchant = value(2), rawAmount = value(3).uppercased()
+                if merchant.range(of: #"(?i)\b(ach deposit|internet transfer|daily cash deposit|apple card monthly installments?|acmi|this month'?s installment|total financed|total remaining)\b"#, options: .regularExpression) != nil {
+                    excluded += 1; continue
+                }
                 // Running-balance tables have multiple monetary columns: do not mistake the balance for the charge.
                 guard merchant.range(of: #"\d[\d,]*\.\d{2}"#, options: .regularExpression) == nil,
                       merchant.range(of: #"(?i)\b(previous balance|new balance|balance forward|payment due|minimum payment|total payments|total purchases|total fees|total interest)\b"#, options: .regularExpression) == nil else {
@@ -95,8 +124,10 @@ enum PDFStatementImporter {
             }
             if rows.count == before { emptyPages += 1 }
         }
-        return PDFStatementPreview(rows: rows, pageCount: pages.count, scannedPages: scannedPages, unmatchedDatedLines: unmatched, pagesWithoutRows: emptyPages)
+        return PDFStatementPreview(rows: rows, pageCount: pages.count, scannedPages: scannedPages, unmatchedDatedLines: unmatched, pagesWithoutRows: emptyPages, excludedRows: excluded)
     }
+
+    private enum AppleStatementSection { case none, transactions, payments, installments }
 
     static func minorUnits(_ value: String) -> Int? {
         let cleaned = value.trimmingCharacters(in: .whitespaces)
