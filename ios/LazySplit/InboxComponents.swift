@@ -1,5 +1,19 @@
 import SwiftUI
 
+struct InboxCountBadge: View {
+    let count: Int
+
+    var body: some View {
+        Text(count.formatted())
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 18)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(.indigo.opacity(0.1), in: .capsule)
+    }
+}
+
 enum InboxArrivalGroups {
     static func newTransactions(in records: [TransactionRecord]) -> [TransactionRecord] {
         records.filter(\.isNewInInbox).sorted {

@@ -52,6 +52,11 @@ struct StatementPeriodInference: Sendable, Equatable {
             let label = monthLabel(end)
             return Self(kind: .monthly, endingOn: end, message: "Inferred \(label) from the filename. Confirm it before importing.")
         }
+        let compactDatePattern = #"(?<!\d)(20\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])(?!\d)"#
+        if let match = firstMatch(compactDatePattern, in: base), let year = capturedInt(1, match: match, in: base), let month = capturedInt(2, match: match, in: base), validYears.contains(year) {
+            let end = endOfMonth(year: year, month: month, calendar: calendar)
+            return Self(kind: .monthly, endingOn: end, message: "Inferred \(monthLabel(end)) from the dated filename. Confirm it before importing.")
+        }
         let annualPattern = #"(?i)(?:\b(?:annual|yearly|year)\b.*?\b(20\d{2})\b|\b(20\d{2})\b.*?\b(?:annual|yearly|year)\b)"#
         if let match = firstMatch(annualPattern, in: base), let year = capturedInt(match.range(at: 1).location == NSNotFound ? 2 : 1, match: match, in: base), validYears.contains(year) {
             return Self(kind: .yearly, endingOn: date(year: year, month: 12, day: 31, calendar: calendar), message: "Inferred annual statement for \(year) from the filename. Confirm it before importing.")
@@ -286,8 +291,12 @@ struct CSVImportView: View {
                 }.value
                 file.byteCount = loaded.bytes
                 if let pdf = loaded.pdf {
-                    let inference = StatementPeriodInference.infer(filename: file.name, referenceDate: loaded.modifiedAt ?? .now)
-                    file.periodKind = inference.kind; file.endingOn = inference.endingOn; file.periodInference = inference.message
+                    if let period = pdf.statementPeriod {
+                        file.periodKind = period.isYearly ? .yearly : .monthly; file.endingOn = period.endingOn; file.periodInference = period.message
+                    } else {
+                        let inference = StatementPeriodInference.infer(filename: file.name, referenceDate: loaded.modifiedAt ?? .now)
+                        file.periodKind = inference.kind; file.endingOn = inference.endingOn; file.periodInference = inference.message
+                    }
                     file.pdf = pdf; file.rows = pdf.rows
                 }
                 else if let csv = loaded.csv {

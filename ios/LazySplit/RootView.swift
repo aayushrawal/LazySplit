@@ -257,9 +257,7 @@ struct InboxView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "sparkle").foregroundStyle(.indigo)
                             Text("New").font(.headline)
-                            Text(arrivals.count.formatted()).font(.caption.weight(.semibold))
-                                .padding(.horizontal, 7).padding(.vertical, 3)
-                                .background(.indigo.opacity(0.1), in: .capsule)
+                            InboxCountBadge(count: arrivals.count)
                             Image(systemName: newExpanded ? "chevron.up" : "chevron.down")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }.frame(minHeight: 44)

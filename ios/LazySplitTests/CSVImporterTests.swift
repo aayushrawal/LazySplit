@@ -5,6 +5,13 @@ import PDFKit
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    @MainActor func testInboxCountBadgeFitsFourDigitCounts() {
+        let controller = UIHostingController(rootView: InboxCountBadge(count: 9_999))
+        let size = controller.sizeThatFits(in: CGSize(width: 1_000, height: 100))
+        XCTAssertGreaterThan(size.width, 40)
+        XCTAssertLessThan(size.height, 32)
+    }
+
     func testStatementPeriodInferenceFromPDFNames() throws {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
         let reference = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 3, day: 10)))
@@ -43,6 +50,42 @@ final class CSVImporterTests: XCTestCase {
 
         let january = StatementPeriodInference.infer(filename: "Apple Card January 2026.pdf", referenceDate: annualEnd)
         XCTAssertEqual(PDFStatementImporter.date("12/28", endingOn: january.endingOn), calendar.date(from: DateComponents(year: 2025, month: 12, day: 28)))
+    }
+
+    func testStatementContentAndCompactChaseFilenameInferPeriod() throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let chase = try XCTUnwrap(PDFStatementImporter.statementPeriod(in: ["ACCOUNT SUMMARY\nOpening/Closing Date 12/03/18 - 01/01/19\nCredit Limit $4,000.00"]))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: chase.endingOn), DateComponents(year: 2019, month: 1, day: 1))
+        XCTAssertTrue(chase.message.contains("opening/closing"))
+
+        let amex = try XCTUnwrap(PDFStatementImporter.statementPeriod(in: ["American Express Gold Card\nClosing Date 08/25/23\nAccount Ending 51002"]))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: amex.endingOn), DateComponents(year: 2023, month: 8, day: 25))
+
+        let filename = StatementPeriodInference.infer(filename: "20250815-statements-1234.pdf")
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: filename.endingOn), DateComponents(year: 2025, month: 8, day: 31))
+        XCTAssertEqual(filename.kind, .monthly)
+    }
+
+    @MainActor func testAmexColumnarPDFReconstructsVisualRows() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { context in
+            context.beginPage()
+            let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 11), .foregroundColor: UIColor.black]
+            ("American Express Gold Card" as NSString).draw(at: CGPoint(x: 30, y: 30), withAttributes: attributes)
+            ("Closing Date 08/25/23" as NSString).draw(at: CGPoint(x: 30, y: 48), withAttributes: attributes)
+            ("New Charges" as NSString).draw(at: CGPoint(x: 30, y: 90), withAttributes: attributes)
+            for (index, row) in [("07/30/23*", "COFFEE SHOP CHICAGO IL", "$12.34"), ("08/12/23", "GROCERY MARKET AUSTIN TX", "$56.78")].enumerated() {
+                let y = CGFloat(120 + index * 24)
+                (row.0 as NSString).draw(at: CGPoint(x: 30, y: y), withAttributes: attributes)
+                (row.1 as NSString).draw(at: CGPoint(x: 125, y: y), withAttributes: attributes)
+                (row.2 as NSString).draw(at: CGPoint(x: 510, y: y), withAttributes: attributes)
+            }
+        }
+        let preview = try PDFStatementImporter.preview(data: data)
+        XCTAssertEqual(preview.rows.map(\.merchant), ["COFFEE SHOP CHICAGO IL", "GROCERY MARKET AUSTIN TX"])
+        XCTAssertEqual(preview.rows.map(\.amountText), ["12.34", "56.78"])
+        XCTAssertEqual(preview.rows.first?.rawDate, "07/30/23*")
+        XCTAssertNotNil(preview.statementPeriod)
     }
 
     func testStatementBatchRequiresReviewAccountsAndMatchingCurrency() throws {

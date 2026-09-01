@@ -25,6 +25,13 @@ struct PDFStatementPreview: Sendable {
     let unmatchedDatedLines: Int
     let pagesWithoutRows: Int
     var excludedRows: Int = 0
+    var statementPeriod: PDFStatementPeriod? = nil
+}
+
+struct PDFStatementPeriod: Sendable, Equatable {
+    let endingOn: Date
+    let isYearly: Bool
+    let message: String
 }
 
 enum PDFStatementError: LocalizedError {
@@ -44,7 +51,7 @@ enum PDFStatementImporter {
     static let maxBytes = 25 * 1024 * 1024
     // Restrict parsing to transaction-shaped rows, not statement balances or summaries.
     private static let monthName = #"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"#
-    private static let dateToken = #"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?|"# + monthName + #"\s+\d{1,2}(?:,?\s+\d{4})?)"#
+    private static let dateToken = #"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?|"# + monthName + #"\s+\d{1,2}(?:,?\s+\d{4})?)\*?"#
     private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?)\s*$"#
 
     static func preview(data: Data) throws -> PDFStatementPreview {
@@ -53,19 +60,24 @@ enum PDFStatementImporter {
         guard !document.isLocked else { throw PDFStatementError.locked }
         guard document.pageCount > 0 else { throw PDFStatementError.unreadable }
         guard document.pageCount <= 50 else { throw PDFStatementError.tooLarge }
-        var texts: [String] = [], scanned = 0
+        var texts: [String] = [], metadataTexts: [String] = [], scanned = 0
         for index in 0..<document.pageCount {
             try Task.checkCancellation()
             guard let page = document.page(at: index) else { throw PDFStatementError.unreadable }
-            let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !parse(pages: [text]).rows.isEmpty { texts.append(text) }
+            let logicalText = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let visualText = visuallyAlignedText(page)
+            metadataTexts.append(logicalText)
+            let digitalCandidates = [logicalText, visualText].filter { !$0.isEmpty }
+            let bestDigital = digitalCandidates.max { parse(pages: [$0]).rows.count < parse(pages: [$1]).rows.count } ?? ""
+            if !parse(pages: [bestDigital]).rows.isEmpty { texts.append(bestDigital) }
             else {
                 scanned += 1
                 let recognized = try recognize(page)
-                texts.append(recognized.isEmpty ? text : recognized)
+                texts.append(recognized.isEmpty ? bestDigital : recognized)
             }
         }
-        let parsed = parse(pages: texts, scannedPages: scanned)
+        var parsed = parse(pages: texts, scannedPages: scanned)
+        parsed.statementPeriod = statementPeriod(in: metadataTexts) ?? parsed.statementPeriod
         guard !parsed.rows.isEmpty else { throw PDFStatementError.noRows }
         return parsed
     }
@@ -125,7 +137,7 @@ enum PDFStatementImporter {
             }
             if rows.count == before { emptyPages += 1 }
         }
-        return PDFStatementPreview(rows: rows, pageCount: pages.count, scannedPages: scannedPages, unmatchedDatedLines: unmatched, pagesWithoutRows: emptyPages, excludedRows: excluded)
+        return PDFStatementPreview(rows: rows, pageCount: pages.count, scannedPages: scannedPages, unmatchedDatedLines: unmatched, pagesWithoutRows: emptyPages, excludedRows: excluded, statementPeriod: statementPeriod(in: pages))
     }
 
     private enum AppleStatementSection { case none, transactions, payments, installments }
@@ -141,7 +153,7 @@ enum PDFStatementImporter {
     static func date(_ value: String, endingOn: Date) -> Date? {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .gmt
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = value.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "*")))
         let namedPattern = #"^("# + monthName + #")\s+(\d{1,2})(?:,?\s+(\d{4}))?$"#
         if let regex = try? NSRegularExpression(pattern: namedPattern, options: .caseInsensitive),
            let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
@@ -172,6 +184,62 @@ enum PDFStatementImporter {
         let components = DateComponents(year: year, month: month, day: day)
         guard let date = calendar.date(from: components), calendar.dateComponents([.year, .month, .day], from: date) == components else { return nil }
         return date
+    }
+
+    static func statementPeriod(in pages: [String]) -> PDFStatementPeriod? {
+        let text = pages.joined(separator: "\n")
+        let numeric = #"(\d{1,2}[/.]\d{1,2}[/.]\d{2,4})"#
+        let patterns: [(String, Int, String)] = [
+            (#"(?i)opening\s*/\s*closing\s+date\s*:?[ \t]*"# + numeric + #"\s*[-–—]\s*"# + numeric, 2, "opening/closing date"),
+            (#"(?i)statement\s+period\s*:?.*?\b(?:to|through|-|–|—)\s*"# + numeric, 1, "statement period"),
+            (#"(?i)(?:statement\s+)?closing\s+date\s*:?[ \t]*"# + numeric, 1, "closing date"),
+            (#"(?i)(?:billing\s+(?:period|cycle)\s+)?(?:ending|ends|through)\s*:?[ \t]*"# + numeric, 1, "billing period"),
+            (#"(?i)statement\s+includes\s+.*?\bby\s+"# + numeric, 1, "statement period")
+        ]
+        for (pattern, capture, source) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: capture), in: text),
+                  let end = fullDate(String(text[range])) else { continue }
+            return PDFStatementPeriod(endingOn: end, isYearly: false, message: "Used the \(source) printed inside the PDF. Confirm it before importing.")
+        }
+        let monthYear = #"(?im)^\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})\s*$"#
+        if let regex = try? NSRegularExpression(pattern: monthYear), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let monthRange = Range(match.range(at: 1), in: text), let yearRange = Range(match.range(at: 2), in: text),
+           let month = Calendar.current.monthSymbols.firstIndex(where: { $0.caseInsensitiveCompare(String(text[monthRange])) == .orderedSame }), let year = Int(text[yearRange]) {
+            var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+            let start = calendar.date(from: DateComponents(year: year, month: month + 1, day: 1))!
+            let end = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: start)!
+            return PDFStatementPeriod(endingOn: end, isYearly: false, message: "Inferred the month from the statement heading inside the PDF. Confirm it before importing.")
+        }
+        return nil
+    }
+
+    private static func fullDate(_ value: String) -> Date? {
+        let parts = value.split(whereSeparator: { $0 == "/" || $0 == "." }).compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        let year = parts[2] < 100 ? 2000 + parts[2] : parts[2]
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        return validDate(year: year, month: parts[0], day: parts[1], calendar: calendar)
+    }
+
+    private static func visuallyAlignedText(_ page: PDFPage) -> String {
+        guard let selection = page.selection(for: page.bounds(for: .mediaBox)) else { return "" }
+        let fragments = selection.selectionsByLine().compactMap { item -> (String, CGRect)? in
+            let value = item.string?.replacingOccurrences(of: "\u{00a0}", with: " ").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !value.isEmpty else { return nil }
+            return (value, item.bounds(for: page))
+        }.sorted { lhs, rhs in
+            abs(lhs.1.midY - rhs.1.midY) > 2 ? lhs.1.midY > rhs.1.midY : lhs.1.minX < rhs.1.minX
+        }
+        var rows: [[(String, CGRect)]] = []
+        for fragment in fragments {
+            if let last = rows.last, let anchor = last.first,
+               abs(anchor.1.midY - fragment.1.midY) <= max(2, min(anchor.1.height, fragment.1.height) * 0.45) {
+                rows[rows.count - 1].append(fragment)
+            } else { rows.append([fragment]) }
+        }
+        return rows.map { row in row.sorted { $0.1.minX < $1.1.minX }.map(\.0).joined(separator: " ") }.joined(separator: "\n")
     }
 
     // Feed reviewed rows into the existing statement normalization/duplicate detection path.
