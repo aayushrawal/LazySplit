@@ -52,7 +52,7 @@ enum PDFStatementImporter {
     // Restrict parsing to transaction-shaped rows, not statement balances or summaries.
     private static let monthName = #"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"#
     private static let dateToken = #"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?|"# + monthName + #"\s+\d{1,2}(?:,?\s+\d{4})?)\*?"#
-    private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?)\s*$"#
+    private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?\s*[♦†‡#]*)\s*$"#
 
     static func preview(data: Data) throws -> PDFStatementPreview {
         guard data.count <= maxBytes else { throw PDFStatementError.tooLarge }
@@ -86,25 +86,40 @@ enum PDFStatementImporter {
         let regex = try! NSRegularExpression(pattern: rowPattern, options: .caseInsensitive)
         let appleRegex = try! NSRegularExpression(pattern: #"^\s*("# + dateToken + #")\s+(.+?)\s+(\d+(?:\.\d+)?%)\s+(\(?\s*-?\s*\$\s*\d[\d,]*\.\d{2}\s*\)?(?:\s*CR)?)\s+(\(?\s*-?\s*\$\s*\d[\d,]*\.\d{2}\s*\)?(?:\s*CR)?)\s*$"#, options: .caseInsensitive)
         let startsWithDate = try! NSRegularExpression(pattern: #"^\s*"# + dateToken + #"\s"#)
+        let documentText = pages.joined(separator: "\n")
+        let isAppleCard = documentText.range(of: #"(?i)\bApple Card\b"#, options: .regularExpression) != nil
+        let isAmex = documentText.range(of: #"(?i)\b(?:American Express|Amex)\b"#, options: .regularExpression) != nil
         var rows: [PDFStatementRow] = [], unmatched = 0, emptyPages = 0, excluded = 0
+        var amexSection = AmexStatementSection.none
         for (index, text) in pages.enumerated() {
             let before = rows.count
             var appleSection = AppleStatementSection.none
             for raw in text.components(separatedBy: .newlines) {
                 let line = raw.replacingOccurrences(of: "\u{00a0}", with: " ")
                 let normalizedLine = line.trimmingCharacters(in: .whitespaces).lowercased()
-                if normalizedLine == "transactions" || normalizedLine.hasPrefix("transactions date") {
+                if isAppleCard && (normalizedLine == "transactions" || normalizedLine.hasPrefix("transactions date")) {
                     appleSection = .transactions; continue
                 }
-                if normalizedLine == "payments" || normalizedLine.hasPrefix("payments date") {
+                if isAppleCard && (normalizedLine == "payments" || normalizedLine.hasPrefix("payments date")) {
                     appleSection = .payments; continue
                 }
-                if normalizedLine.contains("apple card monthly installments") || normalizedLine == "monthly installments" {
+                if isAppleCard && (normalizedLine.contains("apple card monthly installments") || normalizedLine == "monthly installments") {
                     appleSection = .installments; continue
+                }
+                if isAmex {
+                    if normalizedLine == "new charges" || normalizedLine.hasPrefix("new charges ") || normalizedLine.contains("new pay over time charges") || normalizedLine.contains("new pay in full charges") {
+                        amexSection = .charges; continue
+                    }
+                    if normalizedLine == "payments" || normalizedLine == "credits" || normalizedLine.hasPrefix("payments and credits") {
+                        amexSection = .payments; continue
+                    }
+                    if normalizedLine == "fees" || normalizedLine == "interest charged" || normalizedLine.hasPrefix("fees and interest") {
+                        amexSection = .adjustments; continue
+                    }
                 }
                 let range = NSRange(line.startIndex..., in: line)
                 let dated = startsWithDate.firstMatch(in: line, range: range) != nil
-                if dated && appleSection != .none && appleSection != .transactions {
+                if dated && ((isAppleCard && appleSection != .none && appleSection != .transactions) || (isAmex && amexSection != .none && amexSection != .charges)) {
                     excluded += 1; continue
                 }
                 if let match = appleRegex.firstMatch(in: line, range: range) {
@@ -141,6 +156,7 @@ enum PDFStatementImporter {
     }
 
     private enum AppleStatementSection { case none, transactions, payments, installments }
+    private enum AmexStatementSection { case none, payments, charges, adjustments }
 
     static func minorUnits(_ value: String) -> Int? {
         let cleaned = value.trimmingCharacters(in: .whitespaces)

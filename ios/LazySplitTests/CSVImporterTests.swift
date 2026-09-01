@@ -88,6 +88,26 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertNotNil(preview.statementPeriod)
     }
 
+    func testAmexSectionsExcludePaymentsAndKeepNewCharges() {
+        let preview = PDFStatementImporter.parse(pages: ["""
+        American Express Gold Card
+        Closing Date 03/14/23
+        Payments and Credits
+        Payments
+        02/16/23* ONLINE PAYMENT - THANK YOU -$122.51
+        03/01/23* MOBILE PAYMENT RECEIVED -$416.62
+        New Charges
+        02/11/23 COFFEE SHOP HYATTSVILLE MD $12.34 ♦
+        02/22/23 GROCERY MARKET RIVERDALE MD $56.78 †
+        Fees
+        03/14/23 Late Fee $29.00
+        """])
+        XCTAssertEqual(preview.rows.map(\.merchant), ["COFFEE SHOP HYATTSVILLE MD", "GROCERY MARKET RIVERDALE MD"])
+        XCTAssertEqual(preview.rows.map(\.amountText), ["12.34", "56.78"])
+        XCTAssertEqual(preview.rows.map(\.isCredit), [false, false])
+        XCTAssertEqual(preview.excludedRows, 3)
+    }
+
     func testStatementBatchRequiresReviewAccountsAndMatchingCurrency() throws {
         let account = StatementAccount(id: UUID(), name: "Apple Card", mask: "1234", currencyCode: "USD")
         var row = PDFStatementRow(rawDate: "08/31/2026", originalLine: "08/31 Coffee 10.00", page: 1, merchant: "Coffee", amountText: "10.00", isCredit: false,
