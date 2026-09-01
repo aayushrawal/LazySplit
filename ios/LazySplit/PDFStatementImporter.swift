@@ -52,7 +52,7 @@ enum PDFStatementImporter {
     // Restrict parsing to transaction-shaped rows, not statement balances or summaries.
     private static let monthName = #"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"#
     private static let dateToken = #"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?|"# + monthName + #"\s+\d{1,2}(?:,?\s+\d{4})?)\*?"#
-    private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?\s*[♦†‡#]*)\s*$"#
+    private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?\s*[♦†‡#⧫◆]*)\s*$"#
 
     static func preview(data: Data) throws -> PDFStatementPreview {
         guard data.count <= maxBytes else { throw PDFStatementError.tooLarge }
@@ -136,7 +136,19 @@ enum PDFStatementImporter {
                     continue
                 }
                 func value(_ index: Int) -> String { Range(match.range(at: index), in: line).map { String(line[$0]).trimmingCharacters(in: .whitespaces) } ?? "" }
-                let merchant = value(2), rawAmount = value(3).uppercased()
+                var merchant = value(2)
+                let rawAmount = value(3).uppercased()
+                if isAmex && amexSection == .charges {
+                    // Modern Amex statements add a Foreign Spend column before the
+                    // billed USD amount. The generic balance-table guard would reject
+                    // that extra decimal, so remove only the final foreign-spend value
+                    // while we are inside the issuer's explicit New Charges section.
+                    merchant = merchant.replacingOccurrences(
+                        of: #"\s+(?:[A-Z]{3}\s+)?[$£€₹]?\s*\d[\d,]*\.\d{2}\s*$"#,
+                        with: "",
+                        options: [.regularExpression, .caseInsensitive]
+                    )
+                }
                 if merchant.range(of: #"(?i)\b(ach deposit|internet transfer|daily cash deposit|apple card monthly installments?|acmi|this month'?s installment|total financed|total remaining)\b"#, options: .regularExpression) != nil {
                     excluded += 1; continue
                 }

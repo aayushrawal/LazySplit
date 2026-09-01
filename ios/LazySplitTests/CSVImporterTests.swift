@@ -108,6 +108,31 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertEqual(preview.excludedRows, 3)
     }
 
+    func testModernAmexGoldPayOverTimeAndForeignSpendRows() {
+        let preview = PDFStatementImporter.parse(pages: ["""
+        American Express Classic Gold Card
+        Closing Date 05/29/25
+        Payments and Credits
+        05/13/25* AUTOPAY PAYMENT RECEIVED - THANK YOU -$760.08
+        New Charges
+        Detail ⧫ - Pay Over Time and/or Cash Advance activity
+        Card Ending 4-42007 Foreign Spend Amount
+        04/29/25 WALMART SUPER VENTA EN LINEA CIUDAD DE MEXICO 507.41 $25.97 ⧫
+        05/02/25 AMAZON MEDIA GROUP 866-216-1072 WA $274.64 ⧫
+        05/06/25 UBER TRIP HTTPS://UBER.COM 29.94 $1.53 ⧫
+        Fees
+        Total Fees for this Period $0.00
+        """])
+        XCTAssertEqual(preview.rows.map(\.merchant), [
+            "WALMART SUPER VENTA EN LINEA CIUDAD DE MEXICO",
+            "AMAZON MEDIA GROUP 866-216-1072 WA",
+            "UBER TRIP HTTPS://UBER.COM"
+        ])
+        XCTAssertEqual(preview.rows.map(\.amountText), ["25.97", "274.64", "1.53"])
+        XCTAssertEqual(preview.rows.map(\.isCredit), [false, false, false])
+        XCTAssertEqual(preview.excludedRows, 1)
+    }
+
     func testStatementBatchRequiresReviewAccountsAndMatchingCurrency() throws {
         let account = StatementAccount(id: UUID(), name: "Apple Card", mask: "1234", currencyCode: "USD")
         var row = PDFStatementRow(rawDate: "08/31/2026", originalLine: "08/31 Coffee 10.00", page: 1, merchant: "Coffee", amountText: "10.00", isCredit: false,
