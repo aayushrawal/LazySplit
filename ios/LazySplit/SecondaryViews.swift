@@ -23,7 +23,7 @@ struct CardsAccountsView: View {
     @State private var selectedAccountID: String?
 
     private var visibleTransactions: [TransactionRecord] {
-        transactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) }
+        transactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isRemovedFromSource }
     }
 
     private var accounts: [AccountPresentation] {
@@ -46,25 +46,23 @@ struct CardsAccountsView: View {
         return values.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private var selectedAccount: AccountPresentation? {
-        accounts.first { $0.id == selectedAccountID } ?? accounts.first
-    }
-
     var body: some View {
+        let accountValues = accounts
+        let selectedAccount = accountValues.first { $0.id == selectedAccountID } ?? accountValues.first
         List {
             Section("Add or refresh") {
-                PlaidConnectRow(message: $message) { Task { await refreshConnections() } }
+                PlaidConnectRow(message: $message) { Task { await refreshConnections(refreshTransactions: true) } }
                 Button { importAccount = nil; showingImporter = true } label: { Label("Upload statements", systemImage: "doc.badge.plus") }
                 Button { showingManualAccount = true } label: { Label("Add account manually", systemImage: "creditcard.badge.plus") }
             }
 
-            if accounts.isEmpty {
+            if accountValues.isEmpty {
                 Section { ContentUnavailableView("No accounts yet", systemImage: "creditcard", description: Text("Connect through Plaid or add a statement-only account such as Apple Card.")) }
             } else {
                 Section("Choose an account") {
                     ScrollView(.horizontal) {
                         HStack(spacing: 10) {
-                            ForEach(accounts) { account in
+                            ForEach(accountValues) { account in
                                 AccountSelectorCard(account: account, selected: selectedAccount?.id == account.id) {
                                     withAnimation(.snappy) { selectedAccountID = account.id }
                                 }
@@ -79,7 +77,7 @@ struct CardsAccountsView: View {
                             importAccount = account.remoteID.map { StatementAccount(id: $0, name: account.name, mask: account.mask, currencyCode: account.currencyCode) }
                             showingImporter = true
                         } onSync: {
-                            Task { await refreshConnections() }
+                            Task { await refreshConnections(refreshTransactions: true) }
                         }
                         if let remote = overview?.accounts.first(where: { $0.id == account.remoteID }) {
                             Button {
@@ -120,8 +118,8 @@ struct CardsAccountsView: View {
             if let error = session.transactionRefreshError { Text(error).foregroundStyle(.red) }
         }
         .navigationTitle("Cards & Accounts")
-        .refreshable { await refreshConnections() }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { Task { await refreshConnections() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(isRefreshing || session.isDemoMode) } }
+        .refreshable { await refreshConnections(refreshTransactions: true) }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { Task { await refreshConnections(refreshTransactions: true) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(isRefreshing || session.isDemoMode) } }
         .sheet(isPresented: $showingImporter) { NavigationStack { CSVImportView(account: importAccount) } }
         .sheet(isPresented: $showingManualAccount) {
             NavigationStack { ManualAccountView { _ in Task { await refreshConnections() } } }
@@ -144,18 +142,18 @@ struct CardsAccountsView: View {
             Text("Your bank supplied “\(renamingAccount?.providerName ?? renamingAccount?.name ?? "Account")”. Set the product name you prefer; this only changes LazySplit.")
         }
         .task { await refreshConnections() }
-        .onChange(of: accounts.map(\.id)) { _, ids in
+        .onChange(of: accountValues.map(\.id)) { _, ids in
             if selectedAccountID == nil || !ids.contains(selectedAccountID!) { selectedAccountID = ids.first }
         }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await refreshConnections() } } }
     }
 
-    @MainActor private func refreshConnections() async {
+    @MainActor private func refreshConnections(refreshTransactions: Bool = false) async {
         guard !session.isDemoMode else { overview = nil; return }
         isRefreshing = true; defer { isRefreshing = false }
         do { overview = try await session.api.connections() }
         catch { message = error.localizedDescription }
-        await session.refreshTransactions(in: modelContext)
+        if refreshTransactions { await session.refreshTransactions(in: modelContext, force: true) }
     }
 }
 
@@ -202,18 +200,9 @@ private struct AccountHistoryCard: View {
     let onSync: () -> Void
     @AppStorage("accounts.historyMonthCount") private var historyMonthCount = 48
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
-    private var purchaseTransactions: [TransactionRecord] { account.transactions.filter { !$0.isCredit && $0.amountMinor > 0 } }
-    private var years: [AccountCoverageYear] {
-        let calendar = Calendar.current
-        let months = AccountHistoryWindow.monthStarts(monthCount: historyMonthCount, endingAt: .now, calendar: calendar).map { date in
-            let rows = purchaseTransactions.filter { calendar.isDate($0.date, equalTo: date, toGranularity: .month) }
-            return AccountCoverageMonth(date: date, hasPlaid: rows.contains { $0.source == .plaid }, hasStatement: rows.contains { $0.source == .csv }, count: rows.count)
-        }
-        return Dictionary(grouping: months.reversed()) { calendar.component(.year, from: $0.date) }
-            .map { AccountCoverageYear(year: $0.key, months: $0.value) }.sorted { $0.year > $1.year }
-    }
 
     var body: some View {
+        let history = AccountHistoryWindow.summary(transactions: account.transactions, monthCount: historyMonthCount)
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Image(systemName: "creditcard.fill").foregroundStyle(.indigo).font(.title3)
@@ -226,8 +215,8 @@ private struct AccountHistoryCard: View {
                     .font(.caption).foregroundStyle(account.connected ? .green : .secondary)
             }
             HStack(spacing: 18) {
-                LabeledContent("Purchases", value: "\(purchaseTransactions.count)")
-                if let latest = purchaseTransactions.map(\.date).max() {
+                LabeledContent("Purchases", value: "\(history.purchaseCount)")
+                if let latest = history.latestPurchase {
                     Spacer(); LabeledContent("Latest", value: latest.formatted(date: .abbreviated, time: .omitted))
                 }
             }.font(.caption).foregroundStyle(.secondary)
@@ -254,7 +243,7 @@ private struct AccountHistoryCard: View {
                 }.buttonStyle(.borderless)
             }
             Text("Tap any missing month to upload its statement. Plaid months update when you sync.").font(.caption).foregroundStyle(.secondary)
-            ForEach(years) { year in
+            ForEach(history.years) { year in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(String(year.year)).font(.headline.monospacedDigit())
                     LazyVGrid(columns: columns, spacing: 8) {
@@ -298,15 +287,47 @@ enum AccountHistoryWindow {
               let first = calendar.date(byAdding: .month, value: -(count - 1), to: current) else { return [] }
         return (0..<count).compactMap { calendar.date(byAdding: .month, value: $0, to: first) }
     }
+
+    static func summary(transactions: [TransactionRecord], monthCount: Int, endingAt date: Date = .now, calendar: Calendar = .current) -> AccountHistorySummary {
+        let purchases = transactions.filter { !$0.isCredit && $0.amountMinor > 0 }
+        var values = [Date: AccountMonthAccumulator]()
+        for transaction in purchases {
+            guard let month = calendar.date(from: calendar.dateComponents([.year, .month], from: transaction.date)) else { continue }
+            var value = values[month] ?? AccountMonthAccumulator()
+            value.count += 1
+            value.hasPlaid = value.hasPlaid || transaction.source == .plaid
+            value.hasStatement = value.hasStatement || transaction.source == .csv
+            values[month] = value
+        }
+        let months = monthStarts(monthCount: monthCount, endingAt: date, calendar: calendar).map { month in
+            let value = values[month] ?? AccountMonthAccumulator()
+            return AccountCoverageMonth(date: month, hasPlaid: value.hasPlaid, hasStatement: value.hasStatement, count: value.count)
+        }
+        let years = Dictionary(grouping: months.reversed()) { calendar.component(.year, from: $0.date) }
+            .map { AccountCoverageYear(year: $0.key, months: $0.value) }.sorted { $0.year > $1.year }
+        return AccountHistorySummary(purchaseCount: purchases.count, latestPurchase: purchases.lazy.map(\.date).max(), years: years)
+    }
 }
 
-private struct AccountCoverageYear: Identifiable {
+struct AccountHistorySummary {
+    let purchaseCount: Int
+    let latestPurchase: Date?
+    let years: [AccountCoverageYear]
+}
+
+private struct AccountMonthAccumulator {
+    var count = 0
+    var hasPlaid = false
+    var hasStatement = false
+}
+
+struct AccountCoverageYear: Identifiable {
     let year: Int
     let months: [AccountCoverageMonth]
     var id: Int { year }
 }
 
-private struct AccountCoverageMonth: Identifiable {
+struct AccountCoverageMonth: Identifiable {
     let date: Date
     let hasPlaid: Bool
     let hasStatement: Bool
@@ -380,8 +401,8 @@ struct OutboxView: View {
             attempt.attemptedAt = .now; try? modelContext.save()
         }
     }
-    private func symbol(_ status: String) -> String { status == "published" ? "checkmark.circle.fill" : status == "failed" ? "exclamationmark.circle.fill" : "clock.fill" }
-    private func color(_ status: String) -> Color { status == "published" ? .green : status == "failed" ? .red : .orange }
+    private func symbol(_ status: String) -> String { status == "published" ? "checkmark.circle.fill" : status == "failed" ? "exclamationmark.circle.fill" : status == "removed" ? "xmark.circle.fill" : "clock.fill" }
+    private func color(_ status: String) -> Color { status == "published" ? .green : status == "failed" ? .red : status == "removed" ? .secondary : .orange }
 }
 
 struct SettingsView: View {

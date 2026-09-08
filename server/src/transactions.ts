@@ -11,6 +11,14 @@ export const importedTransactionSchema = z.object({
   currencyCode: z.string().length(3), fingerprint: z.string().min(1), isCredit: z.boolean().default(false)
 });
 export const manualAccountSchema = z.object({ id: z.string().uuid(), name: z.string().trim().min(1).max(80), mask: z.string().regex(/^(\d{4})?$/).default(""), currencyCode: z.enum(["USD", "CAD", "EUR", "GBP", "AUD", "INR", "SGD", "CHF"]) });
+export const transactionListQuerySchema = z.object({
+  state: z.string().optional(), account: z.string().uuid().optional(), before: z.string().optional(),
+  cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(500).default(200),
+  updatedAfter: z.string().datetime().optional(), updatedBefore: z.string().datetime().optional()
+}).refine((value) => !value.updatedBefore || value.updatedAfter, { message: "updatedBefore requires updatedAfter" });
+export const reviewUpdatesSchema = z.object({
+  updates: z.array(z.object({ id: z.string().uuid(), state: z.enum(["needsReview", "personal", "sharedDraft", "queued"]) })).min(1).max(500)
+});
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   app.post("/v1/accounts", { preHandler: requireUser }, async (request) => {
@@ -29,14 +37,24 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     });
   });
   app.get("/v1/transactions", { preHandler: requireUser }, async (request) => {
-    const query = z.object({ state: z.string().optional(), account: z.string().uuid().optional(), before: z.string().optional(), cursor: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(500).default(200) }).parse(request.query);
+    const query = transactionListQuerySchema.parse(request.query);
+    const incremental = Boolean(query.updatedAfter);
+    const syncTimestamp = query.updatedBefore ?? new Date().toISOString();
     const values: unknown[] = [request.userID]; let where = "t.user_id=$1";
+    if (incremental) {
+      values.push(query.updatedAfter); where += ` AND t.updated_at>$${values.length}`;
+      values.push(syncTimestamp); where += ` AND t.updated_at<=$${values.length}`;
+    } else {
+      where += " AND t.deleted_at IS NULL";
+    }
     if (query.state) { values.push(query.state); where += ` AND t.review_state=$${values.length}`; }
     if (query.account) { values.push(query.account); where += ` AND t.account_id=$${values.length}`; }
     if (query.before) { values.push(query.before); where += ` AND t.transaction_date<$${values.length}`; }
     if (query.cursor) {
       values.push(query.cursor);
-      where += ` AND (t.transaction_date,t.id) < (SELECT transaction_date,id FROM transactions WHERE id=$${values.length} AND user_id=$1)`;
+      where += incremental
+        ? ` AND (t.updated_at,t.id) > (SELECT updated_at,id FROM transactions WHERE id=$${values.length} AND user_id=$1)`
+        : ` AND (t.transaction_date,t.id) < (SELECT transaction_date,id FROM transactions WHERE id=$${values.length} AND user_id=$1)`;
     }
     values.push(query.limit);
     const result = await pool.query(
@@ -44,10 +62,11 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
        t.merchant,COALESCE(t.original_description,'') AS "originalDescription",t.transaction_date AS date,
        t.amount_minor::integer AS "amountMinor",t.currency_code AS "currencyCode",t.review_state AS state,
        t.raw_category AS category,t.category_detail AS "categoryDetail",t.city,t.region,t.country,
-       t.payment_channel AS "paymentChannel",t.is_credit AS "isCredit",t.fingerprint,t.possible_duplicate_id AS "possibleDuplicateID"
+       t.payment_channel AS "paymentChannel",t.is_credit AS "isCredit",t.fingerprint,t.possible_duplicate_id AS "possibleDuplicateID",
+       (t.deleted_at IS NOT NULL) AS deleted
        FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE ${where}
-       ORDER BY t.transaction_date DESC,t.id DESC LIMIT $${values.length}`, values);
-    return { transactions: result.rows, nextCursor: result.rows.length === query.limit ? result.rows.at(-1)!.id : null };
+       ORDER BY ${incremental ? "t.updated_at ASC,t.id ASC" : "t.transaction_date DESC,t.id DESC"} LIMIT $${values.length}`, values);
+    return { transactions: result.rows, nextCursor: result.rows.length === query.limit ? result.rows.at(-1)!.id : null, syncTimestamp };
   });
 
   app.patch("/v1/accounts/:id", { preHandler: requireUser }, async (request, reply) => {
@@ -83,7 +102,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
         const result = await client.query(
           `INSERT INTO transactions(id,user_id,account_id,source,merchant,original_description,transaction_date,amount_minor,currency_code,pending,review_state,fingerprint,is_credit)
            SELECT $1,$2,$3,'csv',$4,$5,$6,$7,$8,false,'needsReview',$9,$10
-           WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE user_id=$2 AND fingerprint=$9 AND is_credit=$10)
+           WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE user_id=$2 AND fingerprint=$9 AND is_credit=$10 AND deleted_at IS NULL)
            ON CONFLICT(id) DO NOTHING RETURNING id`,
           [item.id, request.userID, accountID, item.merchant, item.originalDescription, item.date.slice(0,10), item.amountMinor, item.currencyCode, fingerprint, item.isCredit]);
         result.rowCount ? inserted++ : duplicates++;
@@ -99,7 +118,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const body = z.object({ state: z.enum(["needsReview", "personal", "sharedDraft", "queued"]) }).parse(request.body);
     return transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [request.userID + params.id]);
-      const current = await client.query("SELECT pending FROM transactions WHERE id=$1 AND user_id=$2", [params.id, request.userID]);
+      const current = await client.query("SELECT pending FROM transactions WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL", [params.id, request.userID]);
       if (!current.rowCount) return reply.code(404).send({ message: "Transaction not found." });
       const published = await client.query("SELECT id FROM split_drafts WHERE transaction_id=$1 AND user_id=$2 AND state='published'", [params.id, request.userID]);
       if (published.rowCount || current.rows[0].pending) return reply.code(409).send({ message: "Pending or published transactions cannot be reclassified." });
@@ -108,11 +127,26 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  app.patch("/v1/transactions/reviews", { preHandler: requireUser }, async (request) => {
+    const body = reviewUpdatesSchema.parse(request.body);
+    return transaction(async (client) => {
+      const ids = body.updates.map((item) => item.id), states = body.updates.map((item) => item.state);
+      const result = await client.query<{ id: string }>(
+        `WITH updates AS (SELECT * FROM unnest($1::uuid[],$2::text[]) AS u(id,state))
+         UPDATE transactions t SET review_state=u.state,updated_at=now() FROM updates u
+         WHERE t.id=u.id AND t.user_id=$3 AND NOT t.pending AND t.deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM split_drafts d WHERE d.transaction_id=t.id AND d.user_id=$3 AND d.state='published')
+         RETURNING t.id`, [ids, states, request.userID]);
+      if (result.rowCount !== ids.length) throw Object.assign(new Error("One or more transactions can no longer be classified."), { statusCode: 409 });
+      return { updated: result.rowCount };
+    });
+  });
+
   app.get("/v1/coverage", { preHandler: requireUser }, async (request) => {
     const result = await pool.query(
       `SELECT a.id,a.name,a.mask,date_trunc('month',t.transaction_date)::date AS month,
        bool_or(t.source='plaid') AS plaid,bool_or(t.source='csv') AS csv,count(*)::integer AS count
-       FROM accounts a LEFT JOIN transactions t ON t.account_id=a.id
+       FROM accounts a LEFT JOIN transactions t ON t.account_id=a.id AND t.deleted_at IS NULL
        WHERE a.user_id=$1 GROUP BY a.id,a.name,a.mask,date_trunc('month',t.transaction_date) ORDER BY month`, [request.userID]);
     return { months: result.rows };
   });
@@ -131,7 +165,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
          count(t.id)::integer AS "transactionCount",max(t.transaction_date)::date AS "lastTransactionDate"
          FROM accounts a
          LEFT JOIN provider_connections pc ON pc.id=a.connection_id
-         LEFT JOIN transactions t ON t.account_id=a.id
+         LEFT JOIN transactions t ON t.account_id=a.id AND t.deleted_at IS NULL
          WHERE a.user_id=$1
          GROUP BY a.id,a.name,a.mask,a.currency_code,pc.provider,pc.status
          ORDER BY a.name,a.mask`, [request.userID])

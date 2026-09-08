@@ -9,7 +9,7 @@ export async function sendDueDigests(now = new Date()): Promise<number> {
   if (!config.APNS_PRIVATE_KEY || !config.APNS_KEY_ID || !config.APNS_TEAM_ID || !config.APNS_TOPIC) return 0;
   const result = await pool.query<Device>(
     `SELECT d.token,d.user_id,d.timezone,d.digest_hour,d.last_digest_date,
-      (SELECT count(*)::integer FROM transactions t WHERE t.user_id=d.user_id AND t.review_state='needsReview' AND NOT t.pending) AS pending_count
+      (SELECT count(*)::integer FROM transactions t WHERE t.user_id=d.user_id AND t.review_state='needsReview' AND NOT t.pending AND t.deleted_at IS NULL) AS pending_count
      FROM devices d WHERE d.enabled=true`);
   let sent = 0;
   for (const device of result.rows) {

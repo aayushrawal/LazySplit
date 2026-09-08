@@ -88,6 +88,8 @@ ALTER TABLE transactions ADD COLUMN IF NOT EXISTS region text;
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS country text;
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payment_channel text;
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_credit boolean NOT NULL DEFAULT false;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+CREATE INDEX IF NOT EXISTS transactions_user_updated_idx ON transactions(user_id, updated_at, id);
 
 CREATE TABLE IF NOT EXISTS splitwise_cache (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

@@ -328,7 +328,7 @@ struct CSVImportView: View {
             } else {
                 // Server-first: a preview/cancel/failure never creates orphaned local transactions.
                 result = try await session.api.importTransactions(pending.values, idempotencyKey: pending.key)
-                await session.refreshTransactions(in: modelContext)
+                await session.refreshTransactions(in: modelContext, force: true)
             }
             message = "Added \(result.inserted) transactions; skipped \(result.duplicates + pending.duplicates) exact duplicates."
             if let error = session.transactionRefreshError { message! += " \(error) Refresh the inbox to download the saved transactions." }

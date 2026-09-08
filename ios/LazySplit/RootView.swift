@@ -126,10 +126,6 @@ struct MainTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
-    @Query private var transactions: [TransactionRecord]
-    @Query private var drafts: [SplitDraft]
-    @Query private var exportAttempts: [ExportAttempt]
-
     var body: some View {
         TabView {
             NavigationStack { InboxView() }
@@ -160,6 +156,7 @@ struct MainTabView: View {
     }
 
     private func prepareLocalDataForCurrentSession() {
+        guard let transactions = try? modelContext.fetch(FetchDescriptor<TransactionRecord>()) else { return }
         if session.isDemoMode {
             guard !transactions.contains(where: \.isDemo) else { return }
             DemoData.transactions.forEach(modelContext.insert)
@@ -169,6 +166,8 @@ struct MainTabView: View {
 
         let demoIDs = Set(transactions.filter { $0.isDemo || DemoData.isLegacyDemo($0) }.map(\.id))
         guard !demoIDs.isEmpty else { return }
+        let drafts = (try? modelContext.fetch(FetchDescriptor<SplitDraft>())) ?? []
+        let exportAttempts = (try? modelContext.fetch(FetchDescriptor<ExportAttempt>())) ?? []
         drafts.filter { demoIDs.contains($0.transactionID) }.forEach { draft in
             exportAttempts.filter { $0.draftID == draft.id }.forEach(modelContext.delete)
             modelContext.delete(draft)
@@ -185,40 +184,28 @@ struct InboxView: View {
     @State private var filters = InboxFilters()
     @State private var showingFilters = false
     @State private var search = ""
+    @State private var debouncedSearch = ""
     @State private var selected = Set<UUID>()
     @State private var undoActions: [(UUID, ReviewState)] = []
     @State private var lastAction = ""
     @State private var collapsedGroups = Set<String>()
     @AppStorage("inbox.historyGrouping") private var historyGrouping: InboxGrouping = .month
     @State private var newExpanded = true
+    @State private var newDisplayLimit = 100
+    @State private var didInitializeGroups = false
     @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
 
-    private var accountKeys: [String] { Array(Set(visibleTransactions.map(\.accountColorKey))).sorted() }
-    private var accountColors: [String: Int] {
-        AccountColors.assignments(for: accountKeys, retaining: (try? JSONDecoder().decode([String: Int].self, from: savedAccountColors)) ?? [:])
-    }
-    private var accountLegend: [TransactionRecord] {
-        var seen = Set<String>()
-        return visibleTransactions.filter { seen.insert($0.accountColorKey).inserted }
-            .sorted { $0.cardLabel == $1.cardLabel ? $0.accountColorKey < $1.accountColorKey : $0.cardLabel < $1.cardLabel }
-    }
-
-    private var filtered: [TransactionRecord] {
-        filters.ordered(visibleTransactions.filter { filters.matches($0, search: search) })
-    }
-
     private var visibleTransactions: [TransactionRecord] {
-        allTransactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isCredit && $0.amountMinor > 0 }
+        allTransactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isRemovedFromSource && !$0.isCredit && $0.amountMinor > 0 }
     }
-
-    private var newTransactions: [TransactionRecord] { InboxArrivalGroups.newTransactions(in: filtered) }
-    private var historyGroups: [InboxHistoryGroup] { InboxHistoryGroup.group(filtered, by: historyGrouping, sort: filters.sort) }
 
     var body: some View {
-        let colors = accountColors
-        let groups = historyGroups
-        let arrivals = newTransactions
+        let snapshot = InboxSnapshot.make(records: allTransactions, demoMode: session.isDemoMode, filters: filters, search: debouncedSearch, grouping: historyGrouping)
+        let colors = AccountColors.assignments(for: snapshot.accountKeys, retaining: (try? JSONDecoder().decode([String: Int].self, from: savedAccountColors)) ?? [:])
+        let groups = snapshot.historyGroups
+        let arrivals = snapshot.newTransactions
+        let displayedArrivals = Array(arrivals.prefix(newDisplayLimit))
         List(selection: $selected) {
             Section {
                 HStack {
@@ -278,11 +265,18 @@ struct InboxView: View {
                         Text(filters.activeCount > 0 || !search.isEmpty ? "No new charges match these filters." : "Newly imported charges will appear here.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        ForEach(arrivals) { transaction in transactionLink(transaction, colors: colors) }
+                        ForEach(displayedArrivals) { transaction in transactionLink(transaction, colors: colors) }
+                        if displayedArrivals.count < arrivals.count {
+                            Button("Show 100 more (\(arrivals.count - displayedArrivals.count) remaining)") {
+                                newDisplayLimit = min(newDisplayLimit + 100, arrivals.count)
+                            }
+                            .frame(maxWidth: .infinity).font(.subheadline.weight(.semibold))
+                            .accessibilityHint("Loads the next page of newly imported charges.")
+                        }
                     }
                 }
             }
-            if filtered.isEmpty {
+            if snapshot.filtered.isEmpty {
                 ContentUnavailableView("No matching charges", systemImage: "tray", description: Text("Try different filters or pull to refresh. Credits and refunds are not shown in Inbox."))
                     .listRowBackground(Color.clear)
             }
@@ -320,24 +314,34 @@ struct InboxView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
-                InboxSummaryCard(transactions: filtered, filtering: filters.activeCount > 0 || !search.isEmpty)
-                InboxAccountLegend(accounts: accountLegend, colors: colors)
+                InboxSummaryCard(transactions: snapshot.filtered, filtering: filters.activeCount > 0 || !debouncedSearch.isEmpty)
+                InboxAccountLegend(accounts: snapshot.accountLegend, colors: colors)
             }.background(.regularMaterial)
         }
-        .refreshable { await session.refreshTransactions(in: modelContext) }
-        .task { await session.refreshTransactions(in: modelContext) }
-        .onChange(of: accountKeys, initial: true) { _, _ in
-            if let data = try? JSONEncoder().encode(accountColors) { savedAccountColors = data }
+        .refreshable { await session.refreshTransactions(in: modelContext, force: true) }
+        .onChange(of: snapshot.accountKeys, initial: true) { _, _ in
+            if let data = try? JSONEncoder().encode(colors) { savedAccountColors = data }
         }
-        .onChange(of: search) { _, _ in collapsedGroups.removeAll(); newExpanded = true; selected.removeAll() }
-        .onChange(of: filters) { _, _ in collapsedGroups.removeAll(); newExpanded = true; selected.removeAll() }
-        .onChange(of: historyGrouping) { _, _ in collapsedGroups.removeAll(); selected.removeAll() }
-        .onChange(of: arrivals.map(\.id)) { old, new in
-            if !Set(new).subtracting(old).isEmpty { newExpanded = true }
+        .task(id: search) {
+            do {
+                try await Task.sleep(for: .milliseconds(200))
+                debouncedSearch = search
+            } catch {}
+        }
+        .onChange(of: search) { _, _ in newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
+        .onChange(of: filters) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
+        .onChange(of: historyGrouping) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; selected.removeAll() }
+        .onChange(of: "\(arrivals.count):\(arrivals.first?.id.uuidString ?? "none")") { old, new in
+            if old != new { newExpanded = true; newDisplayLimit = 100 }
+        }
+        .onChange(of: groups.map(\.id), initial: true) { _, ids in
+            guard !didInitializeGroups else { return }
+            collapsedGroups = groups.reduce(0, { $0 + $1.transactions.count }) > 300 ? Set(ids.dropFirst()) : []
+            didInitializeGroups = true
         }
         .onChange(of: filters.excludePersonal) { _, hide in if hide && filters.state == .personal { filters.state = nil } }
         .searchable(text: $search, prompt: "Search charges")
-        .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: visibleTransactions) }
+        .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: snapshot.visible) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
             if !selected.isEmpty {
@@ -381,7 +385,7 @@ struct InboxView: View {
         records.forEach { $0.newImportDismissed = true }
         selected.subtract(records.map(\.id))
         // Reveal the destination groups; "seen" never changes review or approval state.
-        collapsedGroups.removeAll()
+        collapsedGroups.removeAll(); didInitializeGroups = false; newDisplayLimit = 100
         do { try modelContext.save() }
         catch {
             records.forEach { $0.newImportDismissed = false }
@@ -401,7 +405,8 @@ struct InboxView: View {
         undoActions = []; persistReviews()
     }
     private func bulkSet(_ state: ReviewState) {
-        apply(filtered.filter { selected.contains($0.id) }, state: state)
+        let matches = filters.ordered(filters.matching(visibleTransactions, search: debouncedSearch))
+        apply(matches.filter { selected.contains($0.id) }, state: state)
         selected.removeAll()
     }
     private func apply(_ records: [TransactionRecord], state: ReviewState) {

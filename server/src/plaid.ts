@@ -253,9 +253,9 @@ export async function syncConnection(connectionID: string, replayMetadata = fals
 async function applyPages(connection: { id: string; user_id: string }, pages: SyncResponse[], cursor: string): Promise<void> {
   await transaction(async (client) => {
     for (const page of pages) {
-      for (const removed of page.removed) await client.query("DELETE FROM transactions WHERE user_id = $1 AND source = 'plaid' AND external_id = $2", [connection.user_id, removed.transaction_id]);
+      for (const removed of page.removed) await client.query("UPDATE transactions SET deleted_at=now(),updated_at=now() WHERE user_id=$1 AND source='plaid' AND external_id=$2 AND deleted_at IS NULL", [connection.user_id, removed.transaction_id]);
       for (const item of [...page.added, ...page.modified]) {
-        if (item.pending_transaction_id) await client.query("DELETE FROM transactions WHERE user_id=$1 AND source='plaid' AND external_id=$2", [connection.user_id, item.pending_transaction_id]);
+        if (item.pending_transaction_id) await client.query("UPDATE transactions SET deleted_at=now(),updated_at=now() WHERE user_id=$1 AND source='plaid' AND external_id=$2 AND deleted_at IS NULL", [connection.user_id, item.pending_transaction_id]);
         const account = await client.query<{ id: string; name: string; mask: string | null }>(
           `INSERT INTO accounts (user_id, connection_id, external_id, name, currency_code) VALUES ($1, $2, $3, $3, $4)
            ON CONFLICT (user_id, external_id) DO UPDATE SET connection_id = EXCLUDED.connection_id RETURNING id, name, mask`,
@@ -265,13 +265,13 @@ async function applyPages(connection: { id: string; user_id: string }, pages: Sy
         const minor = Math.round(Math.abs(item.amount) * 100);
         const fingerprint = createHash("sha256").update(`${accountRow.id}|${item.date}|${minor}|${normalize(merchant)}`).digest("hex");
         const importedMatch = await client.query<{ id: string }>(
-          "SELECT id FROM transactions WHERE user_id=$1 AND source='csv' AND transaction_date=$2 AND amount_minor=$3 AND regexp_replace(lower(merchant),'[^a-z0-9]','','g')=$4 AND account_id=$5 AND is_credit=$6 LIMIT 1",
+          "SELECT id FROM transactions WHERE user_id=$1 AND source='csv' AND transaction_date=$2 AND amount_minor=$3 AND regexp_replace(lower(merchant),'[^a-z0-9]','','g')=$4 AND account_id=$5 AND is_credit=$6 AND deleted_at IS NULL LIMIT 1",
           [connection.user_id, item.date, minor, normalize(merchant), accountRow.id, item.amount < 0]);
         if (importedMatch.rows[0]) {
           await client.query(
             `UPDATE transactions SET account_id=$1,external_id=$2,source='plaid',merchant=$3,original_description=$4,
              currency_code=$5,pending=$6,review_state=CASE WHEN $6 THEN 'pending' ELSE review_state END,
-             fingerprint=$7,raw_category=$8,updated_at=now() WHERE id=$9`,
+             fingerprint=$7,raw_category=$8,deleted_at=NULL,updated_at=now() WHERE id=$9`,
             [accountRow.id, item.transaction_id, merchant, item.original_description ?? item.name, item.iso_currency_code ?? "USD",
              item.pending, fingerprint, item.personal_finance_category?.primary ?? null, importedMatch.rows[0].id]);
           await updateTransactionMetadata(client, connection.user_id, item);
@@ -283,7 +283,8 @@ async function applyPages(connection: { id: string; user_id: string }, pages: Sy
            ON CONFLICT (user_id, source, external_id) DO UPDATE SET merchant=EXCLUDED.merchant, original_description=EXCLUDED.original_description,
              transaction_date=EXCLUDED.transaction_date, amount_minor=EXCLUDED.amount_minor, currency_code=EXCLUDED.currency_code,
              pending=EXCLUDED.pending, fingerprint=EXCLUDED.fingerprint, raw_category=EXCLUDED.raw_category,
-             review_state=CASE WHEN transactions.review_state='pending' AND NOT EXCLUDED.pending THEN 'needsReview' ELSE transactions.review_state END, updated_at=now()`,
+             review_state=CASE WHEN transactions.review_state='pending' AND NOT EXCLUDED.pending THEN 'needsReview' ELSE transactions.review_state END,
+             deleted_at=NULL,updated_at=now()`,
           [connection.user_id, accountRow.id, item.transaction_id, merchant, item.original_description ?? item.name, item.date, minor,
            item.iso_currency_code ?? "USD", item.pending, item.pending ? "pending" : "needsReview", fingerprint, item.personal_finance_category?.primary ?? null]);
         await updateTransactionMetadata(client, connection.user_id, item);

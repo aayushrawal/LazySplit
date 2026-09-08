@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { decryptToken, encryptToken } from "./crypto.js";
-import { canonicalFingerprint, importedTransactionSchema, manualAccountSchema } from "./transactions.js";
+import { canonicalFingerprint, importedTransactionSchema, manualAccountSchema, reviewUpdatesSchema, transactionListQuerySchema } from "./transactions.js";
 import { parseJSONBody } from "./http.js";
 
 test("provider tokens round-trip through authenticated encryption", () => {
@@ -32,4 +32,18 @@ test("statement import can be scoped to an owned account ID", () => {
 test("JSON parser accepts bodyless authenticated POST and DELETE requests", () => {
   assert.deepEqual(parseJSONBody(Buffer.alloc(0)), {});
   assert.deepEqual(parseJSONBody(Buffer.from('{"ok":true}')), { ok: true });
+});
+
+test("transaction list accepts bounded incremental sync cursors", () => {
+  const updatedAfter = "2026-09-01T12:00:00.000Z";
+  const updatedBefore = "2026-09-01T12:01:00.000Z";
+  assert.deepEqual(transactionListQuerySchema.parse({ updatedAfter, updatedBefore, limit: "500" }), { updatedAfter, updatedBefore, limit: 500 });
+  assert.throws(() => transactionListQuerySchema.parse({ updatedBefore }));
+});
+
+test("review batches are bounded and validate states", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  assert.equal(reviewUpdatesSchema.parse({ updates: [{ id, state: "personal" }] }).updates[0]!.state, "personal");
+  assert.throws(() => reviewUpdatesSchema.parse({ updates: [] }));
+  assert.throws(() => reviewUpdatesSchema.parse({ updates: [{ id, state: "published" }] }));
 });

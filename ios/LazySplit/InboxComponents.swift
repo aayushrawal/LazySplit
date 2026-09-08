@@ -81,10 +81,15 @@ struct InboxHistoryGroup: Identifiable {
     let id: String
     let title: String
     let transactions: [TransactionRecord]
-    var reviewCount: Int { transactions.filter { $0.state == .needsReview }.count }
-    var pendingCount: Int { transactions.filter { $0.state == .pending }.count }
-    var postedTotals: [(currency: String, amount: Decimal)] {
-        InboxMonth(id: .distantPast, transactions: transactions).postedTotals
+    let reviewCount: Int
+    let pendingCount: Int
+    let postedTotals: [(currency: String, amount: Decimal)]
+
+    init(id: String, title: String, transactions: [TransactionRecord]) {
+        self.id = id; self.title = title; self.transactions = transactions
+        reviewCount = transactions.lazy.filter { $0.state == .needsReview }.count
+        pendingCount = transactions.lazy.filter { $0.state == .pending }.count
+        postedTotals = InboxMonth(id: .distantPast, transactions: transactions).postedTotals
     }
 
     static func group(_ records: [TransactionRecord], by grouping: InboxGrouping, sort: InboxSort) -> [InboxHistoryGroup] {
@@ -105,6 +110,31 @@ struct InboxHistoryGroup: Identifiable {
                 .map { InboxHistoryGroup(id: "account:\($0.key)", title: $0.value.first!.cardLabel, transactions: ordering.ordered($0.value)) }
                 .sorted { $0.title == $1.title ? $0.id < $1.id : $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         }
+    }
+}
+
+struct InboxSnapshot {
+    let visible: [TransactionRecord]
+    let filtered: [TransactionRecord]
+    let newTransactions: [TransactionRecord]
+    let historyGroups: [InboxHistoryGroup]
+    let accountKeys: [String]
+    let accountLegend: [TransactionRecord]
+
+    static func make(records: [TransactionRecord], demoMode: Bool, filters: InboxFilters, search: String, grouping: InboxGrouping) -> InboxSnapshot {
+        let visible = records.filter { DemoData.shouldDisplay($0, inDemoMode: demoMode) && !$0.isRemovedFromSource && !$0.isCredit && $0.amountMinor > 0 }
+        let filtered = filters.ordered(filters.matching(visible, search: search))
+        var seen = Set<String>()
+        let legend = visible.filter { seen.insert($0.accountColorKey).inserted }
+            .sorted { $0.cardLabel == $1.cardLabel ? $0.accountColorKey < $1.accountColorKey : $0.cardLabel < $1.cardLabel }
+        return InboxSnapshot(
+            visible: visible,
+            filtered: filtered,
+            newTransactions: InboxArrivalGroups.newTransactions(in: filtered),
+            historyGroups: InboxHistoryGroup.group(filtered, by: grouping, sort: filters.sort),
+            accountKeys: Array(Set(visible.map(\.accountColorKey))).sorted(),
+            accountLegend: legend
+        )
     }
 }
 

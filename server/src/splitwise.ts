@@ -60,7 +60,7 @@ export async function splitwiseRoutes(app: FastifyInstance): Promise<void> {
     await pool.query("INSERT INTO idempotency_keys(user_id,idempotency_key) VALUES($1,$2) ON CONFLICT DO NOTHING", [request.userID, key]);
     const result = await transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [request.userID + body.transactionID]);
-      const source = await client.query("SELECT review_state,pending,is_credit FROM transactions WHERE id=$1 AND user_id=$2", [body.transactionID, request.userID]);
+      const source = await client.query("SELECT review_state,pending,is_credit FROM transactions WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL", [body.transactionID, request.userID]);
       if (!source.rowCount) throw Object.assign(new Error("Transaction not found."), { statusCode: 404 });
       if (source.rows[0].review_state === "personal" || source.rows[0].pending || source.rows[0].is_credit) {
         throw Object.assign(new Error("Personal transactions, pending charges, and credits cannot be published."), { statusCode: 409 });

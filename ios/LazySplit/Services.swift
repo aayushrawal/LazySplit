@@ -130,18 +130,30 @@ actor APIClient {
         try await request("/v1/connections")
     }
 
-    func transactions() async throws -> [RemoteTransaction] {
+    func transactions(updatedAfter: Date? = nil) async throws -> TransactionSyncResult {
         var records = [RemoteTransaction]()
         var cursor: UUID?
         var seen = Set<UUID>()
+        var syncTimestamp: Date?
         repeat {
-            let path = "/v1/transactions?limit=500" + (cursor.map { "&cursor=\($0.uuidString)" } ?? "")
+            var items = [URLQueryItem(name: "limit", value: "500")]
+            if let updatedAfter { items.append(URLQueryItem(name: "updatedAfter", value: Self.queryDate(updatedAfter))) }
+            if let syncTimestamp { items.append(URLQueryItem(name: "updatedBefore", value: Self.queryDate(syncTimestamp))) }
+            if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor.uuidString)) }
+            var components = URLComponents(); components.queryItems = items
+            let path = "/v1/transactions?\(components.percentEncodedQuery ?? "limit=500")"
             let response: TransactionsResponse = try await request(path)
             records.append(contentsOf: response.transactions)
+            if syncTimestamp == nil { syncTimestamp = response.syncTimestamp }
             cursor = response.nextCursor
             if let cursor, !seen.insert(cursor).inserted { throw APIError.invalidResponse }
         } while cursor != nil
-        return records
+        return TransactionSyncResult(transactions: records, syncTimestamp: syncTimestamp ?? .now)
+    }
+
+    private static func queryDate(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     func renameAccount(id: UUID, nickname: String) async throws {
@@ -155,6 +167,11 @@ actor APIClient {
 
     func setReview(id: UUID, state: ReviewState) async throws {
         let _: EmptyResponse = try await request("/v1/transactions/\(id.uuidString)/review", method: "PATCH", body: ["state": state.rawValue])
+    }
+
+    func setReviews(_ updates: [ReviewUpdate]) async throws {
+        guard !updates.isEmpty else { return }
+        let _: ReviewBatchResponse = try await request("/v1/transactions/reviews", method: "PATCH", body: ReviewBatchBody(updates: updates))
     }
 
     func importTransactions(_ values: [ImportedTransaction], idempotencyKey: String) async throws -> ImportResponse {
@@ -382,8 +399,13 @@ struct RemoteTransaction: Decodable {
     let id: UUID; let externalID: String?; let source: TransactionSource; let accountName: String; let accountMask: String
     let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String
     let state: ReviewState; let category: String?; let fingerprint: String; let possibleDuplicateID: UUID?
+    var deleted: Bool = false
 }
-private struct TransactionsResponse: Decodable { let transactions: [RemoteTransaction]; let nextCursor: UUID? }
+struct TransactionSyncResult { let transactions: [RemoteTransaction]; let syncTimestamp: Date }
+private struct TransactionsResponse: Decodable { let transactions: [RemoteTransaction]; let nextCursor: UUID?; let syncTimestamp: Date? }
+struct ReviewUpdate: Encodable, Sendable { let id: UUID; let state: ReviewState }
+private struct ReviewBatchBody: Encodable { let updates: [ReviewUpdate] }
+private struct ReviewBatchResponse: Decodable { let updated: Int }
 struct ImportedTransaction: Encodable, Sendable { let id: UUID; let accountName: String; let accountMask: String; let merchant: String; let originalDescription: String; let date: Date; let amountMinor: Int; let currencyCode: String; let fingerprint: String; let isCredit: Bool; var accountID: UUID? = nil }
 private struct ManualAccountResponse: Decodable { let account: StatementAccount }
 private struct ImportBody: Encodable, Sendable { let idempotencyKey: String; let transactions: [ImportedTransaction] }

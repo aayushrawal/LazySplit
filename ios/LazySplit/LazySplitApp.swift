@@ -54,10 +54,13 @@ final class AppSession {
     var transactionRefreshError: String?
     var reviewSyncError: String?
     private var isSyncingReviews = false
+    private var lastRefreshFinishedAt: Date?
+    private static let transactionSyncKey = "transactions.lastSuccessfulSyncAt"
     let api = APIClient()
 
-    func refreshTransactions(in context: ModelContext) async {
+    func refreshTransactions(in context: ModelContext, force: Bool = false) async {
         guard !isDemoMode, isAuthenticated, !isRefreshingTransactions else { return }
+        if !force, let lastRefreshFinishedAt, Date.now.timeIntervalSince(lastRefreshFinishedAt) < 30 { return }
         let sessionToken = KeychainStore.read("sessionToken")
         guard sessionToken != nil else { return }
         isRefreshingTransactions = true
@@ -65,27 +68,54 @@ final class AppSession {
         do {
             await syncReviewDecisions(in: context)
             // A swipe or Undo may finish syncing while this read is in flight.
-            let snapshots = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo }
-            let reviewVersions = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.id, ($0.updatedAt, $0.reviewNeedsSync)) })
-            let remote = try await api.transactions()
-            guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == sessionToken else { return }
             let existing = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo }
+            let reviewVersions = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, ($0.updatedAt, $0.reviewNeedsSync)) })
+            let storedTimestamp = UserDefaults.standard.object(forKey: Self.transactionSyncKey) as? Date
+            let result = try await api.transactions(updatedAfter: storedTimestamp)
+            guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == sessionToken else { return }
             var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+            let deletedIDs = Set(result.transactions.lazy.filter(\.deleted).map(\.id))
+            var retainedRemovedIDs = Set<UUID>()
+            if !deletedIDs.isEmpty {
+                let drafts = try context.fetch(FetchDescriptor<SplitDraft>()).filter { deletedIDs.contains($0.transactionID) }
+                let draftIDs = Set(drafts.map(\.id))
+                retainedRemovedIDs = Set(drafts.map(\.transactionID))
+                if !draftIDs.isEmpty {
+                    for attempt in try context.fetch(FetchDescriptor<ExportAttempt>()) where draftIDs.contains(attempt.draftID) && attempt.status != "published" {
+                        attempt.status = "removed"
+                        attempt.errorMessage = "The source transaction was removed by the financial institution and cannot be published."
+                    }
+                }
+            }
             let receivedAt = Date.now
-            for item in remote {
+            for item in result.transactions {
+                if item.deleted {
+                    if let current = byID.removeValue(forKey: item.id) {
+                        if retainedRemovedIDs.contains(item.id) { current.isRemovedFromSource = true }
+                        else { context.delete(current) }
+                    }
+                    continue
+                }
                 if let current = byID[item.id] {
-                    current.externalID = item.externalID; current.sourceRaw = item.source.rawValue
-                    current.accountName = item.accountName; current.accountMask = item.accountMask
-                    current.merchant = item.merchant; current.originalDescription = item.originalDescription
-                    current.date = item.date; current.amountMinor = item.amountMinor; current.currencyCode = item.currencyCode
+                    if current.isRemovedFromSource { current.isRemovedFromSource = false }
+                    if current.externalID != item.externalID { current.externalID = item.externalID }
+                    if current.sourceRaw != item.source.rawValue { current.sourceRaw = item.source.rawValue }
+                    if current.accountName != item.accountName { current.accountName = item.accountName }
+                    if current.accountMask != item.accountMask { current.accountMask = item.accountMask }
+                    if current.merchant != item.merchant { current.merchant = item.merchant }
+                    if current.originalDescription != item.originalDescription { current.originalDescription = item.originalDescription }
+                    if current.date != item.date { current.date = item.date }
+                    if current.amountMinor != item.amountMinor { current.amountMinor = item.amountMinor }
+                    if current.currencyCode != item.currencyCode { current.currencyCode = item.currencyCode }
                     // Refresh financial fields without discarding offline review decisions or drafts.
                     let unchanged = reviewVersions[current.id].map { $0.0 == current.updatedAt && !$0.1 } ?? false
-                    if unchanged && !current.reviewNeedsSync && ([.pending, .needsReview, .personal, .sharedDraft].contains(current.state) || item.state == .published) {
+                    if unchanged && !current.reviewNeedsSync && current.state != item.state && ([.pending, .needsReview, .personal, .sharedDraft].contains(current.state) || item.state == .published) {
                         if current.state == .pending && item.state == .needsReview { current.inboxReceivedAt = receivedAt }
                         current.state = item.state
                     }
-                    current.category = item.category; current.fingerprint = item.fingerprint
-                    current.possibleDuplicateID = item.possibleDuplicateID
+                    if current.category != item.category { current.category = item.category }
+                    if current.fingerprint != item.fingerprint { current.fingerprint = item.fingerprint }
+                    if current.possibleDuplicateID != item.possibleDuplicateID { current.possibleDuplicateID = item.possibleDuplicateID }
                 } else {
                     let record = TransactionRecord(id: item.id, externalID: item.externalID, source: item.source, accountName: item.accountName, accountMask: item.accountMask, merchant: item.merchant, originalDescription: item.originalDescription, date: item.date, amountMinor: item.amountMinor, currencyCode: item.currencyCode, state: item.state, category: item.category, fingerprint: item.fingerprint)
                     record.possibleDuplicateID = item.possibleDuplicateID
@@ -94,12 +124,18 @@ final class AppSession {
                     context.insert(record); byID[item.id] = record
                 }
                 if let current = byID[item.id] {
-                    current.accountID = item.accountID
-                    current.categoryDetail = item.categoryDetail; current.city = item.city; current.region = item.region
-                    current.country = item.country; current.paymentChannel = item.paymentChannel; current.isCredit = item.isCredit ?? false
+                    if current.accountID != item.accountID { current.accountID = item.accountID }
+                    if current.categoryDetail != item.categoryDetail { current.categoryDetail = item.categoryDetail }
+                    if current.city != item.city { current.city = item.city }
+                    if current.region != item.region { current.region = item.region }
+                    if current.country != item.country { current.country = item.country }
+                    if current.paymentChannel != item.paymentChannel { current.paymentChannel = item.paymentChannel }
+                    if current.isCredit != (item.isCredit ?? false) { current.isCredit = item.isCredit ?? false }
                 }
             }
             try context.save()
+            UserDefaults.standard.set(result.syncTimestamp, forKey: Self.transactionSyncKey)
+            lastRefreshFinishedAt = .now
             transactionRefreshError = nil
         } catch {
             transactionRefreshError = "Could not refresh transactions: \(error.localizedDescription)"
@@ -117,13 +153,17 @@ final class AppSession {
                 record.reviewNeedsSync = true
             }
             try context.save()
-            // Serialize changes; if Undo runs during a request, send its newer decision next.
-            while let record = try context.fetch(FetchDescriptor<TransactionRecord>()).first(where: { !$0.isDemo && $0.reviewNeedsSync }) {
+            // Send bounded batches instead of issuing one network request and one SwiftData fetch per swipe.
+            let pending = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo && $0.reviewNeedsSync }
+            for batchStart in stride(from: 0, to: pending.count, by: 500) {
                 guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == token else { return }
-                let state = record.state
-                try await api.setReview(id: record.id, state: state)
+                let batch = Array(pending[batchStart..<min(batchStart + 500, pending.count)])
+                let versions = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0.state) })
+                try await api.setReviews(batch.map { ReviewUpdate(id: $0.id, state: $0.state) })
                 guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == token else { return }
-                if record.state == state { record.reviewNeedsSync = false; record.reviewHasSynced = true }
+                for record in batch where record.state == versions[record.id] {
+                    record.reviewNeedsSync = false; record.reviewHasSynced = true
+                }
                 try context.save()
             }
             reviewSyncError = nil
@@ -136,6 +176,8 @@ final class AppSession {
         demoAccounts = []
         demoFriends = []
         KeychainStore.delete("sessionToken")
+        UserDefaults.standard.removeObject(forKey: Self.transactionSyncKey)
+        lastRefreshFinishedAt = nil
         isDemoMode = true
         isAuthenticated = true
         onboardingStep = .complete
@@ -146,6 +188,8 @@ final class AppSession {
         demoFriends = []
         isDemoMode = false
         isAuthenticated = true
+        UserDefaults.standard.removeObject(forKey: Self.transactionSyncKey)
+        lastRefreshFinishedAt = nil
         onboardingStep = .complete
     }
 
@@ -153,6 +197,8 @@ final class AppSession {
         demoAccounts = []
         demoFriends = []
         KeychainStore.delete("sessionToken")
+        UserDefaults.standard.removeObject(forKey: Self.transactionSyncKey)
+        lastRefreshFinishedAt = nil
         isDemoMode = false
         isAuthenticated = false
     }

@@ -81,6 +81,7 @@ final class TransactionRecord {
     var country: String?
     var paymentChannel: String?
     var isCredit: Bool = false
+    var isRemovedFromSource: Bool = false
     var reviewNeedsSync: Bool = false
     var reviewHasSynced: Bool = false
     // Nil on migrated caches: existing history must not all become "New" after an update.

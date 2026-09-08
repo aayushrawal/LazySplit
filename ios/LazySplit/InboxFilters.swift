@@ -88,6 +88,17 @@ struct InboxFilters: Equatable {
 
     func matches(_ transaction: TransactionRecord, search: String = "") -> Bool {
         guard validationError == nil, !transaction.isCredit, transaction.amountMinor > 0 else { return false }
+        return matchesFields(transaction, search: search, minimum: Self.amount(minimum), maximum: Self.amount(maximum))
+    }
+
+    func matching(_ records: [TransactionRecord], search: String = "") -> [TransactionRecord] {
+        guard validationError == nil else { return [] }
+        let minimum = Self.amount(minimum), maximum = Self.amount(maximum)
+        return records.filter { matchesFields($0, search: search, minimum: minimum, maximum: maximum) }
+    }
+
+    private func matchesFields(_ transaction: TransactionRecord, search: String, minimum: Decimal?, maximum: Decimal?) -> Bool {
+        guard !transaction.isCredit, transaction.amountMinor > 0 else { return false }
         if excludePersonal && transaction.state == .personal { return false }
         if let state, transaction.state != state { return false }
         if let account, transaction.cardLabel != account { return false }
@@ -98,8 +109,8 @@ struct InboxFilters: Equatable {
         if let channel, (transaction.paymentChannel ?? "unknown") != channel { return false }
         if let source, transaction.source.rawValue != source { return false }
         if onlyPossibleDuplicates && transaction.possibleDuplicateID == nil { return false }
-        if let min = Self.amount(minimum), transaction.amount < min { return false }
-        if let max = Self.amount(maximum), transaction.amount > max { return false }
+        if let minimum, transaction.amount < minimum { return false }
+        if let maximum, transaction.amount > maximum { return false }
         if useDates {
             let day = Calendar.current.startOfDay(for: transaction.date)
             if day < Calendar.current.startOfDay(for: startDate) || day > Calendar.current.startOfDay(for: endDate) { return false }

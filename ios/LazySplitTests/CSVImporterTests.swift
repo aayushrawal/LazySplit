@@ -16,6 +16,44 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertEqual(AccountHistoryWindow.normalized(17), 48)
     }
 
+    func testAccountHistorySummaryAggregatesMonthsInOnePass() throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let first = TransactionRecord(source: .plaid, accountName: "Gold", merchant: "Coffee", date: try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 3))), amountMinor: 500)
+        let second = TransactionRecord(source: .csv, accountName: "Gold", merchant: "Dinner", date: try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 20))), amountMinor: 2_500)
+        let older = TransactionRecord(source: .csv, accountName: "Gold", merchant: "Hotel", date: try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 9))), amountMinor: 9_000)
+        let credit = TransactionRecord(source: .plaid, accountName: "Gold", merchant: "Refund", date: second.date, amountMinor: 300); credit.isCredit = true
+
+        let summary = AccountHistoryWindow.summary(transactions: [first, second, older, credit], monthCount: 12, endingAt: second.date, calendar: calendar)
+        let months = summary.years.flatMap(\.months)
+        let august = try XCTUnwrap(months.first { calendar.component(.month, from: $0.date) == 8 })
+        XCTAssertEqual(summary.purchaseCount, 3)
+        XCTAssertEqual(summary.latestPurchase, second.date)
+        XCTAssertEqual(august.count, 2)
+        XCTAssertTrue(august.hasPlaid)
+        XCTAssertTrue(august.hasStatement)
+    }
+
+    func testInboxSnapshotBuildsLargeLedgerViewsConsistently() {
+        let records = (0..<1_000).map { index in
+            TransactionRecord(source: .plaid, accountName: index.isMultiple(of: 2) ? "Gold" : "Freedom", merchant: "Merchant \(index)", date: .now.addingTimeInterval(TimeInterval(-index * 86_400)), amountMinor: 100 + index)
+        }
+        records.prefix(25).forEach { $0.newImportDismissed = true }
+        let snapshot = InboxSnapshot.make(records: records, demoMode: false, filters: InboxFilters(), search: "", grouping: .month)
+        XCTAssertEqual(snapshot.visible.count, 1_000)
+        XCTAssertEqual(snapshot.filtered.count, 1_000)
+        XCTAssertEqual(snapshot.newTransactions.count, 975)
+        XCTAssertEqual(snapshot.historyGroups.flatMap(\.transactions).count, 25)
+        XCTAssertEqual(snapshot.accountLegend.count, 2)
+    }
+
+    func testRemovedSourceTransactionsStayOutOfInboxSnapshots() {
+        let active = TransactionRecord(source: .plaid, accountName: "Gold", merchant: "Active", date: .now, amountMinor: 100)
+        let removed = TransactionRecord(source: .plaid, accountName: "Gold", merchant: "Removed", date: .now, amountMinor: 200)
+        removed.isRemovedFromSource = true
+        let snapshot = InboxSnapshot.make(records: [active, removed], demoMode: false, filters: InboxFilters(), search: "", grouping: .month)
+        XCTAssertEqual(snapshot.visible.map(\.merchant), ["Active"])
+    }
+
     @MainActor func testInboxCountBadgeFitsFourDigitCounts() {
         let controller = UIHostingController(rootView: InboxCountBadge(count: 9_999))
         let size = controller.sizeThatFits(in: CGSize(width: 1_000, height: 100))
