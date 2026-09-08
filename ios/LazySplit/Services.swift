@@ -136,12 +136,11 @@ actor APIClient {
         var seen = Set<UUID>()
         var syncTimestamp: Date?
         repeat {
-            var items = [URLQueryItem(name: "limit", value: "500")]
-            if let updatedAfter { items.append(URLQueryItem(name: "updatedAfter", value: Self.queryDate(updatedAfter))) }
-            if let syncTimestamp { items.append(URLQueryItem(name: "updatedBefore", value: Self.queryDate(syncTimestamp))) }
-            if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor.uuidString)) }
-            var components = URLComponents(); components.queryItems = items
-            let path = "/v1/transactions?\(components.percentEncodedQuery ?? "limit=500")"
+            let path = Self.transactionQuery(
+                updatedAfter: updatedAfter,
+                updatedBefore: syncTimestamp,
+                cursor: cursor
+            )
             let response: TransactionsResponse = try await request(path)
             records.append(contentsOf: response.transactions)
             if syncTimestamp == nil { syncTimestamp = response.syncTimestamp }
@@ -149,6 +148,19 @@ actor APIClient {
             if let cursor, !seen.insert(cursor).inserted { throw APIError.invalidResponse }
         } while cursor != nil
         return TransactionSyncResult(transactions: records, syncTimestamp: syncTimestamp ?? .now)
+    }
+
+    static func transactionQuery(updatedAfter: Date?, updatedBefore: Date?, cursor: UUID?) -> String {
+        var items = [URLQueryItem(name: "limit", value: "500")]
+        if let updatedAfter {
+            items.append(URLQueryItem(name: "updatedAfter", value: queryDate(updatedAfter)))
+            if let updatedBefore {
+                items.append(URLQueryItem(name: "updatedBefore", value: queryDate(updatedBefore)))
+            }
+        }
+        if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor.uuidString)) }
+        var components = URLComponents(); components.queryItems = items
+        return "/v1/transactions?\(components.percentEncodedQuery ?? "limit=500")"
     }
 
     private static func queryDate(_ date: Date) -> String {

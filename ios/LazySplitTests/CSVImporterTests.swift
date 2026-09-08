@@ -5,6 +5,30 @@ import PDFKit
 @testable import LazySplit
 
 final class CSVImporterTests: XCTestCase {
+    func testTransactionPaginationOnlyBoundsIncrementalSyncs() throws {
+        let cursor = try XCTUnwrap(UUID(uuidString: "ABCB46F5-468D-4B68-AB77-A2F22E5236E2"))
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let end = Date(timeIntervalSince1970: 1_700_003_600)
+
+        let fullComponents = try XCTUnwrap(URLComponents(string: APIClient.transactionQuery(
+            updatedAfter: nil,
+            updatedBefore: end,
+            cursor: cursor
+        )))
+        let fullQuery = try XCTUnwrap(fullComponents.queryItems)
+        let fullNames = Set(fullQuery.map { $0.name })
+        XCTAssertEqual(fullNames, ["limit", "cursor"])
+
+        let incrementalComponents = try XCTUnwrap(URLComponents(string: APIClient.transactionQuery(
+            updatedAfter: start,
+            updatedBefore: end,
+            cursor: cursor
+        )))
+        let incrementalQuery = try XCTUnwrap(incrementalComponents.queryItems)
+        let incrementalNames = Set(incrementalQuery.map { $0.name })
+        XCTAssertEqual(incrementalNames, ["limit", "updatedAfter", "updatedBefore", "cursor"])
+    }
+
     func testAccountHistoryDefaultsTo48MonthsAndSupportsShorterViews() throws {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
         let reference = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 9, day: 15)))
