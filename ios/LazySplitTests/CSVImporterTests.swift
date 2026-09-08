@@ -247,6 +247,64 @@ final class CSVImporterTests: XCTestCase {
         }
     }
 
+    func testMisalignedAmexOCRColumnsRejoinIntoTransactionRows() {
+        let fragments: [(text: String, bounds: CGRect)] = [
+            ("06/07/23 COFFEE SHOP PLANO TX", CGRect(x: 0.05, y: 0.800, width: 0.70, height: 0.012)),
+            ("$12.34", CGRect(x: 0.85, y: 0.792, width: 0.10, height: 0.012)),
+            ("Additional merchant detail", CGRect(x: 0.15, y: 0.770, width: 0.45, height: 0.012)),
+            ("06/06/23 GROCERY MARKET DALLAS TX", CGRect(x: 0.05, y: 0.740, width: 0.70, height: 0.012)),
+            ("$45.67", CGRect(x: 0.85, y: 0.732, width: 0.10, height: 0.012))
+        ]
+
+        let reconstructed = PDFStatementImporter.alignedText(
+            fragments,
+            minimumTolerance: 0.003,
+            relativeTolerance: 0.9
+        )
+        let preview = PDFStatementImporter.parse(pages: ["American Express Gold Card\nNew Charges\n" + reconstructed])
+
+        XCTAssertEqual(preview.rows.map(\.merchant), ["COFFEE SHOP PLANO TX", "GROCERY MARKET DALLAS TX"])
+        XCTAssertEqual(preview.rows.map(\.amountText), ["12.34", "45.67"])
+    }
+
+    func testAmexRowsSplitAcrossAdjacentPDFTextLines() {
+        let preview = PDFStatementImporter.parse(pages: ["""
+        American Express Gold Card
+        Closing Date 06/19/23
+        Payments and Credits
+        06/01/23
+        MOBILE PAYMENT RECEIVED - THANK YOU
+        -$500.00
+        New Charges
+        06/07/23
+        COFFEE SHOP PLANO TX
+        $12.34
+        06/08/23 GROCERY MARKET
+        DALLAS TX
+        $45.67
+        Fees
+        """])
+
+        XCTAssertEqual(preview.rows.map(\.merchant), ["COFFEE SHOP PLANO TX", "GROCERY MARKET DALLAS TX"])
+        XCTAssertEqual(preview.rows.map(\.amountText), ["12.34", "45.67"])
+        XCTAssertEqual(preview.excludedRows, 1)
+    }
+
+    func testAmexCustomFontPayOverTimeMarkerIsAccepted() {
+        let preview = PDFStatementImporter.parse(pages: ["""
+        American Express Gold Card
+        Closing Date 06/19/23
+        New Charges
+        06/07/23 AplPay COFFEE SHOP PLANO TX $12.34 t
+        Payments and Credits
+        06/15/23* REWARD CREDIT -$200.00 t
+        """])
+
+        XCTAssertEqual(preview.rows.map(\.merchant), ["AplPay COFFEE SHOP PLANO TX"])
+        XCTAssertEqual(preview.rows.map(\.amountText), ["12.34"])
+        XCTAssertEqual(preview.excludedRows, 1)
+    }
+
     func testStatementBatchRequiresReviewAccountsAndMatchingCurrency() throws {
         let account = StatementAccount(id: UUID(), name: "Apple Card", mask: "1234", currencyCode: "USD")
         var row = PDFStatementRow(rawDate: "08/31/2026", originalLine: "08/31 Coffee 10.00", page: 1, merchant: "Coffee", amountText: "10.00", isCredit: false,

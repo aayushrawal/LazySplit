@@ -41,7 +41,7 @@ enum PDFStatementError: LocalizedError {
         case .unreadable: "This PDF couldn't be read. Try downloading the statement again or use CSV."
         case .locked: "This PDF is password-protected. Export an unlocked copy from your bank, or use CSV."
         case .tooLarge: "Choose a statement under 25 MB with no more than 50 pages."
-        case .noRows: "No supported transaction rows were found. Try a bank-downloaded PDF or CSV. PDFs must have a numeric or month-name date, description, and amount on the same line."
+        case .noRows: "No supported transaction rows were found. Try a bank-downloaded PDF or CSV. Transactions must include a numeric or month-name date, description, and amount."
         case .invalidSelection: "Check the date, description, and amount for every selected transaction."
         }
     }
@@ -52,7 +52,9 @@ enum PDFStatementImporter {
     // Restrict parsing to transaction-shaped rows, not statement balances or summaries.
     private static let monthName = #"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"#
     private static let dateToken = #"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?|"# + monthName + #"\s+\d{1,2}(?:,?\s+\d{4})?)\*?"#
-    private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?\s*[♦†‡#⧫◆]*)\s*$"#
+    // Some 2023 Amex PDFs encode the visible Pay Over Time diamond in a custom
+    // font whose extracted Unicode value is a trailing lowercase "t".
+    private static let rowPattern = #"^\s*("# + dateToken + #")\s+(?:"# + dateToken + #"\s+)?(.+?)\s+([\-(]?\s*[$£€₹]?\s*\d[\d,]*\.\d{2}\s*\)?\s*(?:CR|DR|-)?\s*[♦†‡#⧫◆t]*)\s*$"#
 
     static func preview(data: Data) throws -> PDFStatementPreview {
         guard data.count <= maxBytes else { throw PDFStatementError.tooLarge }
@@ -93,7 +95,9 @@ enum PDFStatementImporter {
         for (index, text) in pages.enumerated() {
             let before = rows.count
             var appleSection = AppleStatementSection.none
-            for raw in text.components(separatedBy: .newlines) {
+            let sourceLines = text.components(separatedBy: .newlines)
+            let transactionLines = isAmex ? coalescedAmexTransactionLines(sourceLines) : sourceLines
+            for raw in transactionLines {
                 let line = raw.replacingOccurrences(of: "\u{00a0}", with: " ")
                 let normalizedLine = line.trimmingCharacters(in: .whitespaces).lowercased()
                 if isAppleCard && (normalizedLine == "transactions" || normalizedLine.hasPrefix("transactions date")) {
@@ -167,6 +171,47 @@ enum PDFStatementImporter {
             if rows.count == before { emptyPages += 1 }
         }
         return PDFStatementPreview(rows: rows, pageCount: pages.count, scannedPages: scannedPages, unmatchedDatedLines: unmatched, pagesWithoutRows: emptyPages, excludedRows: excluded, statementPeriod: statementPeriod(in: pages))
+    }
+
+    /// Older Amex PDFs sometimes expose one visible transaction row as several
+    /// adjacent text lines (date, merchant, then amount). Join only a bounded run
+    /// that starts with a date and ends in a valid transaction shape.
+    private static func coalescedAmexTransactionLines(_ lines: [String]) -> [String] {
+        let rowRegex = try! NSRegularExpression(pattern: rowPattern, options: .caseInsensitive)
+        let datedRegex = try! NSRegularExpression(pattern: #"^\s*"# + dateToken + #"(?:\s|$)"#, options: .caseInsensitive)
+        func matches(_ regex: NSRegularExpression, _ value: String) -> Bool {
+            regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil
+        }
+
+        var output: [String] = []
+        var index = 0
+        while index < lines.count {
+            let current = lines[index].replacingOccurrences(of: "\u{00a0}", with: " ").trimmingCharacters(in: .whitespaces)
+            guard matches(datedRegex, current), !matches(rowRegex, current) else {
+                output.append(current)
+                index += 1
+                continue
+            }
+
+            var combined = current
+            var consumed = 0
+            for offset in 1...4 where index + offset < lines.count {
+                let next = lines[index + offset].replacingOccurrences(of: "\u{00a0}", with: " ").trimmingCharacters(in: .whitespaces)
+                if next.isEmpty { continue }
+                if matches(datedRegex, next) { break }
+                combined += " " + next
+                consumed = offset
+                if matches(rowRegex, combined) { break }
+            }
+            if consumed > 0, matches(rowRegex, combined) {
+                output.append(combined)
+                index += consumed + 1
+            } else {
+                output.append(current)
+                index += 1
+            }
+        }
+        return output
     }
 
     private enum AppleStatementSection { case none, transactions, payments, installments }
@@ -263,21 +308,63 @@ enum PDFStatementImporter {
 
     private static func visuallyAlignedText(_ page: PDFPage) -> String {
         guard let selection = page.selection(for: page.bounds(for: .mediaBox)) else { return "" }
-        let fragments = selection.selectionsByLine().compactMap { item -> (String, CGRect)? in
+        let fragments = selection.selectionsByLine().compactMap { item -> (text: String, bounds: CGRect)? in
             let value = item.string?.replacingOccurrences(of: "\u{00a0}", with: " ").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !value.isEmpty else { return nil }
-            return (value, item.bounds(for: page))
-        }.sorted { lhs, rhs in
-            abs(lhs.1.midY - rhs.1.midY) > 2 ? lhs.1.midY > rhs.1.midY : lhs.1.minX < rhs.1.minX
+            return (text: value, bounds: item.bounds(for: page))
         }
-        var rows: [[(String, CGRect)]] = []
-        for fragment in fragments {
-            if let last = rows.last, let anchor = last.first,
-               abs(anchor.1.midY - fragment.1.midY) <= max(2, min(anchor.1.height, fragment.1.height) * 0.45) {
-                rows[rows.count - 1].append(fragment)
-            } else { rows.append([fragment]) }
+        return alignedText(fragments, minimumTolerance: 2, relativeTolerance: 0.7)
+    }
+
+    /// Reconstructs visual rows when PDFKit or Vision emits each table column as a
+    /// separate fragment. Amex statements commonly place the amount a few pixels
+    /// below the date/merchant baseline, so exact-baseline grouping loses charges.
+    static func alignedText(
+        _ fragments: [(text: String, bounds: CGRect)],
+        minimumTolerance: CGFloat,
+        relativeTolerance: CGFloat
+    ) -> String {
+        struct Row {
+            var fragments: [(text: String, bounds: CGRect)]
+            var midpoint: CGFloat
+            var height: CGFloat
         }
-        return rows.map { row in row.sorted { $0.1.minX < $1.1.minX }.map(\.0).joined(separator: " ") }.joined(separator: "\n")
+
+        let ordered = fragments.sorted {
+            if abs($0.bounds.midY - $1.bounds.midY) > 0.000_001 {
+                return $0.bounds.midY > $1.bounds.midY
+            }
+            return $0.bounds.minX < $1.bounds.minX
+        }
+        var rows: [Row] = []
+        for fragment in ordered {
+            let candidate = rows.indices
+                .map { index in (index: index, distance: abs(rows[index].midpoint - fragment.bounds.midY)) }
+                .min { $0.distance < $1.distance }
+
+            if let candidate {
+                let row = rows[candidate.index]
+                let rowTop = row.midpoint + row.height / 2
+                let rowBottom = row.midpoint - row.height / 2
+                let overlapTop = min(rowTop, fragment.bounds.maxY)
+                let overlapBottom = max(rowBottom, fragment.bounds.minY)
+                let overlap = max(0, overlapTop - overlapBottom)
+                let smallerHeight = max(0.000_001, min(row.height, fragment.bounds.height))
+                let tolerance = max(minimumTolerance, smallerHeight * relativeTolerance)
+                if overlap / smallerHeight >= 0.25 || candidate.distance <= tolerance {
+                    let count = CGFloat(row.fragments.count)
+                    rows[candidate.index].fragments.append(fragment)
+                    rows[candidate.index].midpoint = (row.midpoint * count + fragment.bounds.midY) / (count + 1)
+                    rows[candidate.index].height = max(row.height, fragment.bounds.height)
+                    continue
+                }
+            }
+            rows.append(Row(fragments: [fragment], midpoint: fragment.bounds.midY, height: fragment.bounds.height))
+        }
+
+        return rows.sorted { $0.midpoint > $1.midpoint }.map { row in
+            row.fragments.sorted { $0.bounds.minX < $1.bounds.minX }.map(\.text).joined(separator: " ")
+        }.joined(separator: "\n")
     }
 
     // Feed reviewed rows into the existing statement normalization/duplicate detection path.
@@ -295,20 +382,42 @@ enum PDFStatementImporter {
     }
 
     private static func recognize(_ page: PDFPage) throws -> String {
-        guard let image = page.thumbnail(of: CGSize(width: 1700, height: 2200), for: .mediaBox).cgImage else { throw PDFStatementError.unreadable }
+        let pageBounds = page.bounds(for: .mediaBox)
+        let width: CGFloat = 2200
+        let height = width * max(pageBounds.height, 1) / max(pageBounds.width, 1)
+        guard let image = page.thumbnail(of: CGSize(width: width, height: height), for: .mediaBox).cgImage else { throw PDFStatementError.unreadable }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US"]
         try VNImageRequestHandler(cgImage: image).perform([request])
-        // OCR often returns each table column separately. Rejoin boxes on the same baseline.
-        let observations = (request.results ?? []).sorted { $0.boundingBox.midY > $1.boundingBox.midY }
-        var lines: [[VNRecognizedTextObservation]] = []
-        for observation in observations {
-            if let last = lines.last, let anchor = last.first,
-               abs(anchor.boundingBox.midY - observation.boundingBox.midY) < min(anchor.boundingBox.height, observation.boundingBox.height) * 0.5 {
-                lines[lines.count - 1].append(observation)
-            } else { lines.append([observation]) }
+        let fragments = (request.results ?? []).compactMap { observation -> (text: String, bounds: CGRect)? in
+            guard let text = observation.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            return (text: text, bounds: observation.boundingBox)
         }
-        return lines.map { line in line.sorted { $0.boundingBox.minX < $1.boundingBox.minX }.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ") }.joined(separator: "\n")
+        let text = alignedText(fragments, minimumTolerance: 0.003, relativeTolerance: 0.9)
+        return text.components(separatedBy: .newlines).map(normalizeOCRTransactionLine).joined(separator: "\n")
+    }
+
+    private static func normalizeOCRTransactionLine(_ line: String) -> String {
+        var result = line
+        let datePrefix = #"^[0-9OoIl|]{1,2}\s*[/|.]\s*[0-9OoIl|]{1,2}(?:\s*[/|.]\s*[0-9OoIl|]{2,4})?\*?"#
+        if let range = result.range(of: datePrefix, options: .regularExpression) {
+                var date = String(result[range])
+                    .replacingOccurrences(of: "O", with: "0")
+                    .replacingOccurrences(of: "o", with: "0")
+                    .replacingOccurrences(of: "I", with: "1")
+                    .replacingOccurrences(of: "l", with: "1")
+                    .replacingOccurrences(of: "|", with: "/")
+                    .replacingOccurrences(of: " ", with: "")
+                date = date.replacingOccurrences(of: ".", with: "/")
+                result.replaceSubrange(range, with: date)
+        }
+        result = result.replacingOccurrences(
+            of: #"\s[§S](\d[\d,]*\.\d{2})(\s*[♦†‡#⧫◆]*)$"#,
+            with: " $1$2",
+            options: .regularExpression
+        )
+        return result
     }
 }
