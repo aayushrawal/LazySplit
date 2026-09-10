@@ -595,16 +595,14 @@ final class CSVImporterTests: XCTestCase {
     @MainActor
     func testCompactInboxDimensionsAtStandardTextSize() {
         let transaction = record()
-        let summary = UIHostingController(rootView: InboxSummaryCard(transactions: [transaction], filtering: false)
+        let switcher = UIHostingController(rootView: InboxScopeSwitcher(selection: .constant(.toReview), toReviewCount: 1_234, reviewedCount: 5_678)
             .environment(\.dynamicTypeSize, .large))
-        let summarySize = summary.sizeThatFits(in: CGSize(width: 361, height: 1000))
-        // Previous summary measured about 142pt at this width; require at least a 50% reduction.
-        XCTAssertLessThanOrEqual(summarySize.height, 71)
+        let switcherSize = switcher.sizeThatFits(in: CGSize(width: 361, height: 1000))
+        XCTAssertLessThanOrEqual(switcherSize.height, 44)
         let row = UIHostingController(rootView: TransactionRow(transaction: transaction)
             .environment(\.dynamicTypeSize, .large))
         let rowSize = row.sizeThatFits(in: CGSize(width: 313, height: 1000))
-        // Including the new 4pt List insets, keep ordinary rows about 20% below the previous ~92pt.
-        XCTAssertLessThanOrEqual(rowSize.height + 4, 75)
+        XCTAssertLessThanOrEqual(rowSize.height + 4, 64)
     }
 
     @MainActor

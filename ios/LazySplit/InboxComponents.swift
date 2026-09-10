@@ -159,27 +159,25 @@ struct InboxGroupHeader: View {
 
     var body: some View {
         Button(action: toggle) {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(group.title).font(.headline.weight(.bold)).foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(group.title).font(.headline.weight(.semibold)).foregroundStyle(.primary)
                     Spacer(minLength: 8)
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption.weight(.bold)).foregroundStyle(.secondary)
-                }
-                Text("\(group.transactions.count) charges · \(group.reviewCount) to review")
-                    .font(.caption).foregroundStyle(.secondary)
-                if !group.postedTotals.isEmpty {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .firstTextBaseline) { totals }
-                        VStack(alignment: .leading, spacing: 4) { totals }
+                    if !group.postedTotals.isEmpty {
+                        Text(compactTotals)
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.primary).lineLimit(1)
                     }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.bold)).foregroundStyle(.tertiary)
                 }
-                if group.pendingCount > 0 {
-                    Text("\(group.pendingCount) pending · not included in totals")
-                        .font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text("\(group.transactions.count) charges")
+                    if group.pendingCount > 0 { Text("· \(group.pendingCount) pending") }
                 }
+                .font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
@@ -189,42 +187,45 @@ struct InboxGroupHeader: View {
         .accessibilityHint("Double tap to \(expanded ? "collapse" : "expand") this group.")
     }
 
-    @ViewBuilder private var totals: some View {
-        Text("Posted charges").font(.caption2).foregroundStyle(.secondary)
-        ForEach(group.postedTotals, id: \.currency) { total in
-            Text("\(total.amount.formatted(.currency(code: total.currency))) \(total.currency)")
-                .font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(.primary)
-        }
+    private var compactTotals: String {
+        group.postedTotals.map { $0.amount.formatted(.currency(code: $0.currency)) }.joined(separator: " · ")
     }
 }
 
-struct InboxSummaryCard: View {
-    let transactions: [TransactionRecord]
-    let filtering: Bool
-    var title = "Inbox"
-    private var reviewCount: Int { transactions.filter { $0.state == .needsReview }.count }
+struct InboxScopeSwitcher: View {
+    @Binding var selection: InboxReviewScope
+    let toReviewCount: Int
+    let reviewedCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text((filtering ? "FILTERED \(title)" : title).uppercased())
-                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                .padding(.horizontal, 20)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Label("\(transactions.count) charges", systemImage: "tray")
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(Color(.secondarySystemGroupedBackground), in: .capsule)
-                    Label("\(reviewCount) to review", systemImage: "checklist")
-                        .font(.caption.weight(.medium)).foregroundStyle(.indigo)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(Color(.secondarySystemGroupedBackground), in: .capsule)
-                }.fixedSize(horizontal: true, vertical: false).padding(.horizontal, 20)
+        HStack(spacing: 24) {
+            scopeButton(.toReview, count: toReviewCount)
+            scopeButton(.reviewed, count: reviewedCount)
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 43)
+        .background(.regularMaterial)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func scopeButton(_ scope: InboxReviewScope, count: Int) -> some View {
+        Button {
+            selection = scope
+        } label: {
+            HStack(spacing: 6) {
+                Text(scope.title)
+                Text(count.formatted()).font(.caption.monospacedDigit())
+                    .foregroundStyle(selection == scope ? Color.indigo : .secondary)
+            }
+            .font(.subheadline.weight(selection == scope ? .semibold : .regular))
+            .foregroundStyle(selection == scope ? Color.primary : .secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(selection == scope ? Color.indigo : .clear).frame(height: 2)
             }
         }
-        .padding(.top, 4).padding(.bottom, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityHint("Credits and refunds are excluded from Inbox.")
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(scope.title), \(count) charges")
     }
 }
 
@@ -233,9 +234,7 @@ struct InboxAccountLegend: View {
     let colors: [String: Int]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("CARDS & ACCOUNTS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                .padding(.horizontal, 20)
+        VStack(alignment: .leading, spacing: 0) {
             if accounts.isEmpty {
                 Text("Connected accounts will appear here.").font(.caption).foregroundStyle(.secondary)
                     .padding(.horizontal, 20)
@@ -249,16 +248,15 @@ struct InboxAccountLegend: View {
                                 Text(account.cardLabel).font(.caption.weight(.medium))
                                     .fixedSize(horizontal: true, vertical: false)
                             }
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(Color(.secondarySystemGroupedBackground), in: .capsule)
+                            .padding(.horizontal, 4).padding(.vertical, 5)
                         }
-                    }.padding(.horizontal, 20)
+                    }.padding(.horizontal, 16)
                 }
                 .accessibilityLabel("Card and account color legend")
                 .accessibilityHint("Scroll horizontally to see additional accounts.")
             }
         }
-        .padding(.top, 4).padding(.bottom, 8)
+        .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial)
     }
@@ -277,7 +275,7 @@ struct TransactionRow: View {
                 .background((accountColor ?? .indigo).opacity(0.10), in: .rect(cornerRadius: 11))
                 .foregroundStyle(accountColor ?? .indigo)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 if dynamicTypeSize.isAccessibilitySize {
                     merchant
                     amount
@@ -288,19 +286,16 @@ struct TransactionRow: View {
                         amount
                     }
                 }
-                Text(transaction.cardLabel).font(.caption).foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(transaction.date.formatted(InboxMonth.dayFormat))
-                    if let city = transaction.city, !city.isEmpty {
-                        Text("· \(city)").lineLimit(1)
-                    }
+                    Text("· \(transaction.cardLabel)").lineLimit(1)
                     Spacer(minLength: 2)
-                    if !dynamicTypeSize.isAccessibilitySize { status }
+                    if !dynamicTypeSize.isAccessibilitySize, showsStatus { status }
                 }.font(.caption2).foregroundStyle(.secondary)
-                if dynamicTypeSize.isAccessibilitySize { status }
+                if dynamicTypeSize.isAccessibilitySize, showsStatus { status }
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
     }
 
@@ -319,6 +314,7 @@ struct TransactionRow: View {
             .padding(.horizontal, 7).padding(.vertical, 3)
             .background((transaction.state == .needsReview ? Color.indigo : Color.secondary).opacity(0.08), in: .capsule)
     }
+    private var showsStatus: Bool { transaction.state != .needsReview }
     private var icon: String {
         let category = TransactionClassification.category(for: transaction).name.lowercased()
         if category.contains("food") || category.contains("drink") { return "fork.knife" }

@@ -198,48 +198,27 @@ struct InboxView: View {
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
 
     var body: some View {
-        let scopedTransactions = allTransactions.filter(reviewScope.includes)
+        let inboxTransactions = allTransactions.filter {
+            DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isRemovedFromSource && !$0.isCredit && $0.amountMinor > 0
+        }
+        let scopedTransactions = inboxTransactions.filter(reviewScope.includes)
         let snapshot = InboxSnapshot.make(records: scopedTransactions, demoMode: session.isDemoMode, filters: filters, search: debouncedSearch, grouping: historyGrouping)
+        let toReviewCount = inboxTransactions.lazy.filter(InboxReviewScope.toReview.includes).count
+        let reviewedCount = inboxTransactions.lazy.filter(InboxReviewScope.reviewed.includes).count
         let colors = AccountColors.assignments(for: snapshot.accountKeys, retaining: (try? JSONDecoder().decode([String: Int].self, from: savedAccountColors)) ?? [:])
         let groups = snapshot.historyGroups
         let arrivals = snapshot.newTransactions
         let displayedArrivals = Array(arrivals.prefix(newDisplayLimit))
         List(selection: $selected) {
-            Section {
-                Picker("Transaction view", selection: $reviewScope) {
-                    ForEach(InboxReviewScope.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 4, trailing: 0))
-                HStack {
-                    Button { showingFilters = true } label: {
-                        Label(filters.activeCount == 0 ? "Filters" : "Filters · \(filters.activeCount)", systemImage: "line.3.horizontal.decrease")
-                            .font(.subheadline.weight(.semibold))
-                    }.buttonStyle(.bordered).clipShape(.capsule)
-                    Spacer()
-                    Menu {
-                        Picker("Group by", selection: $historyGrouping) {
-                            ForEach(InboxGrouping.allCases) { Text($0.title).tag($0) }
-                        }
-                        Divider()
-                        Toggle("Color by card / account", isOn: $colorCodeByAccount)
-                        if reviewScope == .reviewed {
-                            Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
-                        }
-                        Divider()
-                        Button("Expand all groups", systemImage: "rectangle.expand.vertical") { collapsedGroups.removeAll() }
-                        Button("Collapse all groups", systemImage: "rectangle.compress.vertical") {
-                            collapsedGroups = Set(groups.map(\.id)); selected.removeAll()
-                        }
-                    } label: { Label("View", systemImage: "slider.horizontal.3").font(.subheadline.weight(.semibold)) }
-                }
-                .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 0, trailing: 0))
-                .listRowBackground(Color.clear)
+            if session.isRefreshingTransactions || filters.validationError != nil || session.reviewSyncError != nil || session.transactionRefreshError != nil {
+                Section {
                 if session.isRefreshingTransactions { ProgressView("Updating charges…") }
                 if let error = filters.validationError { Text(error).foregroundStyle(.red) }
                 if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
                 if let error = session.transactionRefreshError { Text(error).foregroundStyle(.red) }
-            }.listRowSeparator(.hidden)
+                }
+                .listRowSeparator(.hidden)
+            }
             if reviewScope == .toReview {
                 Section {
                 HStack(spacing: 12) {
@@ -327,7 +306,8 @@ struct InboxView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
-                InboxSummaryCard(transactions: snapshot.filtered, filtering: filters.activeCount > 0 || !debouncedSearch.isEmpty, title: reviewScope.title)
+                InboxScopeSwitcher(selection: $reviewScope, toReviewCount: toReviewCount, reviewedCount: reviewedCount)
+                Divider()
                 InboxAccountLegend(accounts: snapshot.accountLegend, colors: colors)
             }.background(.regularMaterial)
         }
@@ -364,7 +344,34 @@ struct InboxView: View {
             InboxFilterSheet(filters: $filters, transactions: snapshot.visible, allowedStates: reviewScope.states)
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { EditButton() }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showingFilters = true } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .overlay(alignment: .topTrailing) {
+                            if filters.activeCount > 0 {
+                                Circle().fill(Color.indigo).frame(width: 7, height: 7).offset(x: 3, y: -2)
+                            }
+                        }
+                }
+                .accessibilityLabel(filters.activeCount == 0 ? "Filters" : "Filters, \(filters.activeCount) active")
+                Menu {
+                    Picker("Group by", selection: $historyGrouping) {
+                        ForEach(InboxGrouping.allCases) { Text($0.title).tag($0) }
+                    }
+                    Divider()
+                    Toggle("Color by card / account", isOn: $colorCodeByAccount)
+                    if reviewScope == .reviewed {
+                        Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
+                    }
+                    Divider()
+                    Button("Expand all groups", systemImage: "rectangle.expand.vertical") { collapsedGroups.removeAll() }
+                    Button("Collapse all groups", systemImage: "rectangle.compress.vertical") {
+                        collapsedGroups = Set(groups.map(\.id)); selected.removeAll()
+                    }
+                } label: { Image(systemName: "slider.horizontal.3") }
+                .accessibilityLabel("View options")
+                EditButton()
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !selected.isEmpty || !undoActions.isEmpty {
