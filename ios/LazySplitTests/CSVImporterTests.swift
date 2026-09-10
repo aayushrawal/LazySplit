@@ -78,6 +78,14 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertEqual(snapshot.visible.map(\.merchant), ["Active"])
     }
 
+    func testInboxReviewScopeSeparatesUnresolvedAndReviewedTransactions() {
+        let records = ReviewState.allCases.map {
+            TransactionRecord(source: .plaid, accountName: "Card", merchant: $0.title, date: .now, amountMinor: 100, state: $0)
+        }
+        XCTAssertEqual(records.filter(InboxReviewScope.toReview.includes).map(\.state), [.pending, .needsReview])
+        XCTAssertEqual(records.filter(InboxReviewScope.reviewed.includes).map(\.state), [.personal, .sharedDraft, .queued, .published, .failed])
+    }
+
     @MainActor func testInboxCountBadgeFitsFourDigitCounts() {
         let controller = UIHostingController(rootView: InboxCountBadge(count: 9_999))
         let size = controller.sizeThatFits(in: CGSize(width: 1_000, height: 100))

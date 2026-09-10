@@ -183,6 +183,7 @@ struct InboxView: View {
     @Query(sort: \TransactionRecord.date, order: .reverse) private var allTransactions: [TransactionRecord]
     @State private var filters = InboxFilters()
     @State private var showingFilters = false
+    @State private var reviewScope = InboxReviewScope.toReview
     @State private var search = ""
     @State private var debouncedSearch = ""
     @State private var selected = Set<UUID>()
@@ -196,18 +197,20 @@ struct InboxView: View {
     @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
 
-    private var visibleTransactions: [TransactionRecord] {
-        allTransactions.filter { DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isRemovedFromSource && !$0.isCredit && $0.amountMinor > 0 }
-    }
-
     var body: some View {
-        let snapshot = InboxSnapshot.make(records: allTransactions, demoMode: session.isDemoMode, filters: filters, search: debouncedSearch, grouping: historyGrouping)
+        let scopedTransactions = allTransactions.filter(reviewScope.includes)
+        let snapshot = InboxSnapshot.make(records: scopedTransactions, demoMode: session.isDemoMode, filters: filters, search: debouncedSearch, grouping: historyGrouping)
         let colors = AccountColors.assignments(for: snapshot.accountKeys, retaining: (try? JSONDecoder().decode([String: Int].self, from: savedAccountColors)) ?? [:])
         let groups = snapshot.historyGroups
         let arrivals = snapshot.newTransactions
         let displayedArrivals = Array(arrivals.prefix(newDisplayLimit))
         List(selection: $selected) {
             Section {
+                Picker("Transaction view", selection: $reviewScope) {
+                    ForEach(InboxReviewScope.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 4, trailing: 0))
                 HStack {
                     Button { showingFilters = true } label: {
                         Label(filters.activeCount == 0 ? "Filters" : "Filters · \(filters.activeCount)", systemImage: "line.3.horizontal.decrease")
@@ -220,7 +223,9 @@ struct InboxView: View {
                         }
                         Divider()
                         Toggle("Color by card / account", isOn: $colorCodeByAccount)
-                        Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
+                        if reviewScope == .reviewed {
+                            Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
+                        }
                         Divider()
                         Button("Expand all groups", systemImage: "rectangle.expand.vertical") { collapsedGroups.removeAll() }
                         Button("Collapse all groups", systemImage: "rectangle.compress.vertical") {
@@ -235,7 +240,8 @@ struct InboxView: View {
                 if let error = session.reviewSyncError { Text(error).foregroundStyle(.orange) }
                 if let error = session.transactionRefreshError { Text(error).foregroundStyle(.red) }
             }.listRowSeparator(.hidden)
-            Section {
+            if reviewScope == .toReview {
+                Section {
                 HStack(spacing: 12) {
                     Button {
                         newExpanded.toggle()
@@ -275,9 +281,16 @@ struct InboxView: View {
                         }
                     }
                 }
+                }
             }
             if snapshot.filtered.isEmpty {
-                ContentUnavailableView("No matching charges", systemImage: "tray", description: Text("Try different filters or pull to refresh. Credits and refunds are not shown in Inbox."))
+                ContentUnavailableView(
+                    reviewScope == .toReview ? "Nothing to review" : "No reviewed charges",
+                    systemImage: reviewScope == .toReview ? "checkmark.circle" : "clock.arrow.circlepath",
+                    description: Text(reviewScope == .toReview
+                        ? "New and pending charges will appear here. Credits and refunds are excluded."
+                        : "Charges appear here after you mark them personal, shared, queued, published, or failed.")
+                )
                     .listRowBackground(Color.clear)
             }
             if !groups.isEmpty {
@@ -310,11 +323,11 @@ struct InboxView: View {
         .listSectionSpacing(14)
         .scrollContentBackground(.hidden)
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Inbox")
+        .navigationTitle(reviewScope.navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
-                InboxSummaryCard(transactions: snapshot.filtered, filtering: filters.activeCount > 0 || !debouncedSearch.isEmpty)
+                InboxSummaryCard(transactions: snapshot.filtered, filtering: filters.activeCount > 0 || !debouncedSearch.isEmpty, title: reviewScope.title)
                 InboxAccountLegend(accounts: snapshot.accountLegend, colors: colors)
             }.background(.regularMaterial)
         }
@@ -331,6 +344,12 @@ struct InboxView: View {
         .onChange(of: search) { _, _ in newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
         .onChange(of: filters) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
         .onChange(of: historyGrouping) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; selected.removeAll() }
+        .onChange(of: reviewScope) { _, scope in
+            if let state = filters.state, !scope.states.contains(state) { filters.state = nil }
+            filters.excludePersonal = false
+            collapsedGroups.removeAll(); didInitializeGroups = false
+            newExpanded = true; newDisplayLimit = 100; selected.removeAll()
+        }
         .onChange(of: "\(arrivals.count):\(arrivals.first?.id.uuidString ?? "none")") { old, new in
             if old != new { newExpanded = true; newDisplayLimit = 100 }
         }
@@ -341,7 +360,9 @@ struct InboxView: View {
         }
         .onChange(of: filters.excludePersonal) { _, hide in if hide && filters.state == .personal { filters.state = nil } }
         .searchable(text: $search, prompt: "Search charges")
-        .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: snapshot.visible) }
+        .sheet(isPresented: $showingFilters) {
+            InboxFilterSheet(filters: $filters, transactions: snapshot.visible, allowedStates: reviewScope.states)
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
         }

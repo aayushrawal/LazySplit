@@ -138,6 +138,7 @@ struct InboxFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var filters: InboxFilters
     let transactions: [TransactionRecord]
+    let allowedStates: [ReviewState]
 
     var body: some View {
         NavigationStack {
@@ -145,11 +146,13 @@ struct InboxFilterSheet: View {
                 Section("Review") {
                     Picker("Status", selection: $filters.state) {
                         Text("All statuses").tag(ReviewState?.none)
-                        ForEach(ReviewState.allCases) { Text($0.title).tag(Optional($0)) }
+                        ForEach(allowedStates) { Text($0.title).tag(Optional($0)) }
                     }
                     .onChange(of: filters.state) { _, state in if state == .personal { filters.excludePersonal = false } }
-                    Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
-                        .onChange(of: filters.excludePersonal) { _, hide in if hide && filters.state == .personal { filters.state = nil } }
+                    if allowedStates.contains(.personal) {
+                        Toggle("Hide personal transactions", isOn: $filters.excludePersonal)
+                            .onChange(of: filters.excludePersonal) { _, hide in if hide && filters.state == .personal { filters.state = nil } }
+                    }
                     Toggle("Possible duplicates only", isOn: $filters.onlyPossibleDuplicates)
                 }
                 Section {
@@ -190,7 +193,7 @@ struct InboxFilterSheet: View {
                 if let error = filters.validationError { Text(error).foregroundStyle(.red) }
                 Button("Reset filters") { filters = InboxFilters() }
             }
-            .navigationTitle("Inbox filters")
+            .navigationTitle("Transaction filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(filters.validationError != nil) } }
         }

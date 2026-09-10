@@ -77,6 +77,20 @@ enum InboxGrouping: String, CaseIterable, Identifiable {
     }
 }
 
+enum InboxReviewScope: String, CaseIterable, Identifiable {
+    case toReview, reviewed
+    var id: String { rawValue }
+    var title: String { self == .toReview ? "To review" : "Reviewed" }
+    var navigationTitle: String { self == .toReview ? "Inbox" : "Reviewed" }
+    var states: [ReviewState] {
+        switch self {
+        case .toReview: [.pending, .needsReview]
+        case .reviewed: [.personal, .sharedDraft, .queued, .published, .failed]
+        }
+    }
+    func includes(_ transaction: TransactionRecord) -> Bool { states.contains(transaction.state) }
+}
+
 struct InboxHistoryGroup: Identifiable {
     let id: String
     let title: String
@@ -187,11 +201,12 @@ struct InboxGroupHeader: View {
 struct InboxSummaryCard: View {
     let transactions: [TransactionRecord]
     let filtering: Bool
+    var title = "Inbox"
     private var reviewCount: Int { transactions.filter { $0.state == .needsReview }.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(filtering ? "FILTERED INBOX" : "INBOX")
+            Text((filtering ? "FILTERED \(title)" : title).uppercased())
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 .padding(.horizontal, 20)
             ScrollView(.horizontal, showsIndicators: false) {
