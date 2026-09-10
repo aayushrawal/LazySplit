@@ -344,18 +344,29 @@ struct InboxView: View {
         .sheet(isPresented: $showingFilters) { InboxFilterSheet(filters: $filters, transactions: snapshot.visible) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
-            if !selected.isEmpty {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button("Personal") { bulkSet(.personal) }
-                    Spacer()
-                    Button("Return to review") { bulkSet(.needsReview) }
-                }
-            }
         }
-        .safeAreaInset(edge: .bottom) {
-            if !undoActions.isEmpty {
-                HStack { Text(lastAction); Spacer(); Button("Undo") { undo() } }
-                    .padding().background(.regularMaterial).clipShape(.rect(cornerRadius: 14)).padding()
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !selected.isEmpty || !undoActions.isEmpty {
+                VStack(spacing: 8) {
+                    if !selected.isEmpty {
+                        InboxBulkActionBar(
+                            count: selected.count,
+                            markPersonal: { bulkSet(.personal) },
+                            returnToReview: { bulkSet(.needsReview) }
+                        )
+                    }
+                    if !undoActions.isEmpty {
+                        HStack {
+                            Text(lastAction).font(.subheadline).lineLimit(1)
+                            Spacer()
+                            Button("Undo") { undo() }.fontWeight(.semibold)
+                        }
+                        .padding(.horizontal, 14).frame(minHeight: 44)
+                        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 14))
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(.regularMaterial)
             }
         }
     }
@@ -405,8 +416,10 @@ struct InboxView: View {
         undoActions = []; persistReviews()
     }
     private func bulkSet(_ state: ReviewState) {
-        let matches = filters.ordered(filters.matching(visibleTransactions, search: debouncedSearch))
-        apply(matches.filter { selected.contains($0.id) }, state: state)
+        // Selection is cleared whenever filters/grouping change, so selected IDs
+        // already identify the visible rows. Avoid filtering and sorting the full
+        // multi-year inbox again on every bulk action.
+        apply(allTransactions.filter { selected.contains($0.id) }, state: state)
         selected.removeAll()
     }
     private func apply(_ records: [TransactionRecord], state: ReviewState) {
@@ -418,10 +431,33 @@ struct InboxView: View {
         persistReviews()
     }
     private func persistReviews() {
-        do {
-            try modelContext.save()
-            Task { await session.syncReviewDecisions(in: modelContext) }
-        } catch { session.reviewSyncError = error.localizedDescription }
+        session.scheduleReviewPersistence(in: modelContext)
+    }
+}
+
+struct InboxBulkActionBar: View {
+    let count: Int
+    let markPersonal: () -> Void
+    let returnToReview: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("\(count) selected")
+                .font(.subheadline.weight(.semibold)).monospacedDigit()
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button(action: returnToReview) {
+                Label("Review", systemImage: "arrow.uturn.backward")
+            }
+            .buttonStyle(.bordered)
+            Button(action: markPersonal) {
+                Label("Personal", systemImage: "person.fill")
+            }
+            .buttonStyle(.borderedProminent).tint(.gray)
+        }
+        .padding(.horizontal, 14).frame(minHeight: 52)
+        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 16))
+        .accessibilityElement(children: .contain)
     }
 }
 

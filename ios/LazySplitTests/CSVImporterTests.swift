@@ -85,6 +85,18 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertLessThan(size.height, 32)
     }
 
+    @MainActor func testBulkInboxActionsFitAboveCompactPhoneTabBar() {
+        let controller = UIHostingController(rootView: InboxBulkActionBar(
+            count: 9_999,
+            markPersonal: {},
+            returnToReview: {}
+        ))
+        let size = controller.sizeThatFits(in: CGSize(width: 366, height: 100))
+        XCTAssertLessThanOrEqual(size.width, 366)
+        XCTAssertGreaterThanOrEqual(size.height, 44)
+        XCTAssertLessThan(size.height, 70)
+    }
+
     func testStatementPeriodInferenceFromPDFNames() throws {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
         let reference = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 3, day: 10)))

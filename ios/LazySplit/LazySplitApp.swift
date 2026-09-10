@@ -54,6 +54,8 @@ final class AppSession {
     var transactionRefreshError: String?
     var reviewSyncError: String?
     private var isSyncingReviews = false
+    private var scheduledReviewPersistence: Task<Void, Never>?
+    private var scheduledReviewSync: Task<Void, Never>?
     private var lastRefreshFinishedAt: Date?
     private static let transactionSyncKey = "transactions.lastSuccessfulSyncAt"
     let api = APIClient()
@@ -169,6 +171,32 @@ final class AppSession {
             reviewSyncError = nil
         } catch {
             reviewSyncError = "Review changes are saved on this phone and will retry on refresh: \(error.localizedDescription)"
+        }
+    }
+
+    func scheduleReviewSync(in context: ModelContext) {
+        scheduledReviewSync?.cancel()
+        scheduledReviewSync = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(300)) }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            await self.syncReviewDecisions(in: context)
+        }
+    }
+
+    func scheduleReviewPersistence(in context: ModelContext) {
+        scheduledReviewPersistence?.cancel()
+        scheduledReviewPersistence = Task { [weak self] in
+            // Let SwiftUI present the new classification before doing disk I/O.
+            do { try await Task.sleep(for: .milliseconds(25)) }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            do {
+                try context.save()
+                self.scheduleReviewSync(in: context)
+            } catch {
+                self.reviewSyncError = "Could not save review changes: \(error.localizedDescription)"
+            }
         }
     }
 
