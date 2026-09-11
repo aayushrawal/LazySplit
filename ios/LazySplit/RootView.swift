@@ -128,16 +128,16 @@ struct MainTabView: View {
     @Environment(AppSession.self) private var session
     var body: some View {
         TabView {
-            NavigationStack { InboxView() }
+            NavigationStack { InboxView(reviewScope: .toReview) }
                 .tabItem { Label("Inbox", systemImage: "tray.full") }
             NavigationStack { CardsAccountsView() }
                 .tabItem { Label("Accounts", systemImage: "creditcard.and.123") }
             NavigationStack { FriendsManagementView() }
                 .tabItem { Label("Friends", systemImage: "person.2.fill") }
+            NavigationStack { InboxView(reviewScope: .reviewed) }
+                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
             NavigationStack { OutboxView() }
                 .tabItem { Label("Outbox", systemImage: "paperplane") }
-            NavigationStack { SettingsView() }
-                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .tint(.indigo)
         .task(id: session.isDemoMode) {
@@ -181,9 +181,9 @@ struct InboxView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Query(sort: \TransactionRecord.date, order: .reverse) private var allTransactions: [TransactionRecord]
+    let reviewScope: InboxReviewScope
     @State private var filters = InboxFilters()
     @State private var showingFilters = false
-    @State private var reviewScope = InboxReviewScope.toReview
     @State private var search = ""
     @State private var debouncedSearch = ""
     @State private var selected = Set<UUID>()
@@ -203,8 +203,6 @@ struct InboxView: View {
         }
         let scopedTransactions = inboxTransactions.filter(reviewScope.includes)
         let snapshot = InboxSnapshot.make(records: scopedTransactions, demoMode: session.isDemoMode, filters: filters, search: debouncedSearch, grouping: historyGrouping)
-        let toReviewCount = inboxTransactions.lazy.filter(InboxReviewScope.toReview.includes).count
-        let reviewedCount = inboxTransactions.lazy.filter(InboxReviewScope.reviewed.includes).count
         let colors = AccountColors.assignments(for: snapshot.accountKeys, retaining: (try? JSONDecoder().decode([String: Int].self, from: savedAccountColors)) ?? [:])
         let groups = snapshot.historyGroups
         let arrivals = snapshot.newTransactions
@@ -305,11 +303,7 @@ struct InboxView: View {
         .navigationTitle(reviewScope.navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                InboxScopeSwitcher(selection: $reviewScope, toReviewCount: toReviewCount, reviewedCount: reviewedCount)
-                Divider()
-                InboxAccountLegend(accounts: snapshot.accountLegend, colors: colors)
-            }.background(.regularMaterial)
+            InboxAccountLegend(accounts: snapshot.accountLegend, colors: colors)
         }
         .refreshable { await session.refreshTransactions(in: modelContext, force: true) }
         .onChange(of: snapshot.accountKeys, initial: true) { _, _ in
@@ -324,12 +318,6 @@ struct InboxView: View {
         .onChange(of: search) { _, _ in newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
         .onChange(of: filters) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
         .onChange(of: historyGrouping) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; selected.removeAll() }
-        .onChange(of: reviewScope) { _, scope in
-            if let state = filters.state, !scope.states.contains(state) { filters.state = nil }
-            filters.excludePersonal = false
-            collapsedGroups.removeAll(); didInitializeGroups = false
-            newExpanded = true; newDisplayLimit = 100; selected.removeAll()
-        }
         .onChange(of: "\(arrivals.count):\(arrivals.first?.id.uuidString ?? "none")") { old, new in
             if old != new { newExpanded = true; newDisplayLimit = 100 }
         }

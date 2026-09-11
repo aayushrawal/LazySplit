@@ -119,7 +119,17 @@ struct CardsAccountsView: View {
         }
         .navigationTitle("Cards & Accounts")
         .refreshable { await refreshConnections(refreshTransactions: true) }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { Task { await refreshConnections(refreshTransactions: true) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(isRefreshing || session.isDemoMode) } }
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { Task { await refreshConnections(refreshTransactions: true) } } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(isRefreshing || session.isDemoMode)
+                NavigationLink { SettingsView() } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+            }
+        }
         .sheet(isPresented: $showingImporter) { NavigationStack { CSVImportView(account: importAccount) } }
         .sheet(isPresented: $showingManualAccount) {
             NavigationStack { ManualAccountView { _ in Task { await refreshConnections() } } }

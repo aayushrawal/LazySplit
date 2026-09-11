@@ -192,43 +192,6 @@ struct InboxGroupHeader: View {
     }
 }
 
-struct InboxScopeSwitcher: View {
-    @Binding var selection: InboxReviewScope
-    let toReviewCount: Int
-    let reviewedCount: Int
-
-    var body: some View {
-        HStack(spacing: 24) {
-            scopeButton(.toReview, count: toReviewCount)
-            scopeButton(.reviewed, count: reviewedCount)
-        }
-        .padding(.horizontal, 20)
-        .frame(height: 43)
-        .background(.regularMaterial)
-        .accessibilityElement(children: .contain)
-    }
-
-    private func scopeButton(_ scope: InboxReviewScope, count: Int) -> some View {
-        Button {
-            selection = scope
-        } label: {
-            HStack(spacing: 6) {
-                Text(scope.title)
-                Text(count.formatted()).font(.caption.monospacedDigit())
-                    .foregroundStyle(selection == scope ? Color.indigo : .secondary)
-            }
-            .font(.subheadline.weight(selection == scope ? .semibold : .regular))
-            .foregroundStyle(selection == scope ? Color.primary : .secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(selection == scope ? Color.indigo : .clear).frame(height: 2)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(scope.title), \(count) charges")
-    }
-}
-
 struct InboxAccountLegend: View {
     let accounts: [TransactionRecord]
     let colors: [String: Int]

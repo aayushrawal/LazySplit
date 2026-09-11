@@ -595,10 +595,6 @@ final class CSVImporterTests: XCTestCase {
     @MainActor
     func testCompactInboxDimensionsAtStandardTextSize() {
         let transaction = record()
-        let switcher = UIHostingController(rootView: InboxScopeSwitcher(selection: .constant(.toReview), toReviewCount: 1_234, reviewedCount: 5_678)
-            .environment(\.dynamicTypeSize, .large))
-        let switcherSize = switcher.sizeThatFits(in: CGSize(width: 361, height: 1000))
-        XCTAssertLessThanOrEqual(switcherSize.height, 44)
         let row = UIHostingController(rootView: TransactionRow(transaction: transaction)
             .environment(\.dynamicTypeSize, .large))
         let rowSize = row.sizeThatFits(in: CGSize(width: 313, height: 1000))
@@ -640,9 +636,9 @@ final class CSVImporterTests: XCTestCase {
             if let previousGrouping { UserDefaults.standard.set(previousGrouping, forKey: "inbox.historyGrouping") }
             else { UserDefaults.standard.removeObject(forKey: "inbox.historyGrouping") }
         }
-        for (name, scheme, size, grouping) in [("light", ColorScheme.light, DynamicTypeSize.large, InboxGrouping.month), ("dark", .dark, .large, .month), ("accessibility", .light, .accessibility3, .month), ("year", .light, .large, .year), ("account", .light, .large, .account)] {
+        for (name, scheme, size, grouping) in [("light", ColorScheme.light, DynamicTypeSize.large, InboxGrouping.month), ("dark", .dark, .large, .month), ("accessibility", .light, .accessibility3, .month), ("year", .light, .large, .year), ("account", .light, .large, .account), ("history", .light, .large, .month)] {
             UserDefaults.standard.set(grouping.rawValue, forKey: "inbox.historyGrouping")
-            let content = NavigationStack { InboxView() }
+            let content = NavigationStack { InboxView(reviewScope: name == "history" ? .reviewed : .toReview) }
                 .environment(session).modelContainer(container)
                 .environment(\.colorScheme, scheme).environment(\.dynamicTypeSize, size)
             window.rootViewController = UIHostingController(rootView: content)
