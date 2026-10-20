@@ -193,14 +193,16 @@ async function processHostedTokens(sessionID: string, publicTokens: string[]): P
 
 async function exchangePublicToken(userID: string, publicToken: string, hostedSessionID?: string): Promise<void> {
   const result = await plaid<{ access_token: string; item_id: string }>("/item/public_token/exchange", { public_token: publicToken });
-  const metadata = hostedSessionID ? { hostedLinkSessionID: hostedSessionID } : {};
+  const item = await plaid<{ item: { institution_id?: string | null } }>("/item/get", { access_token: result.access_token });
+  const institutionID = item.item.institution_id ?? null;
+  const metadata = { ...(hostedSessionID ? { hostedLinkSessionID: hostedSessionID } : {}), ...(institutionID ? { institutionID } : {}) };
   const inserted = await pool.query<{ id: string }>(
     `INSERT INTO provider_connections (user_id,provider,provider_item_id,encrypted_token,metadata)
      VALUES ($1,'plaid',$2,$3,$4::jsonb)
      ON CONFLICT (user_id,provider,provider_item_id) DO UPDATE SET encrypted_token=EXCLUDED.encrypted_token,
        metadata=provider_connections.metadata || EXCLUDED.metadata,status='active',updated_at=now()
      RETURNING id`, [userID, result.item_id, encryptToken(result.access_token), JSON.stringify(metadata)]);
-  await hydrateAccounts(userID, inserted.rows[0]!.id, result.access_token);
+  await hydrateAccounts(userID, inserted.rows[0]!.id, result.access_token, institutionID);
   await syncConnection(inserted.rows[0]!.id);
 }
 
@@ -225,22 +227,50 @@ async function verifyWebhook(signedJWT: string, rawBody: Buffer): Promise<boolea
   }
 }
 
-async function hydrateAccounts(userID: string, connectionID: string, accessToken: string): Promise<void> {
+async function hydrateAccounts(userID: string, connectionID: string, accessToken: string, institutionID: string | null): Promise<void> {
   const result = await plaid<{ accounts: { account_id: string; name: string; official_name?: string | null; mask?: string | null; balances?: { iso_currency_code?: string | null } }[] }>("/accounts/get", { access_token: accessToken });
   for (const account of result.accounts) {
+    const mask = account.mask ?? null;
+    const currency = account.balances?.iso_currency_code ?? "USD";
+    if (institutionID && mask) {
+      const existing = await pool.query<{ id: string }>(
+        `SELECT a.id FROM accounts a
+         JOIN provider_connections pc ON pc.id=a.connection_id
+         WHERE a.user_id=$1 AND a.connection_id<>$2 AND a.mask=$3 AND a.currency_code=$4
+           AND pc.provider='plaid' AND pc.metadata->>'institutionID'=$5
+         ORDER BY pc.updated_at DESC LIMIT 1`,
+        [userID, connectionID, mask, currency, institutionID]
+      );
+      if (existing.rows[0]) {
+        await pool.query(
+          `UPDATE accounts SET connection_id=$1,external_id=$2,name=$3,mask=$4,currency_code=$5 WHERE id=$6`,
+          [connectionID, account.account_id, account.official_name ?? account.name, mask, currency, existing.rows[0].id]
+        );
+        continue;
+      }
+    }
     await pool.query(
       `INSERT INTO accounts(user_id,connection_id,external_id,name,mask,currency_code) VALUES($1,$2,$3,$4,$5,$6)
        ON CONFLICT(user_id,external_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,name=EXCLUDED.name,mask=EXCLUDED.mask,currency_code=EXCLUDED.currency_code`,
-      [userID, connectionID, account.account_id, account.official_name ?? account.name, account.mask ?? null, account.balances?.iso_currency_code ?? "USD"]);
+      [userID, connectionID, account.account_id, account.official_name ?? account.name, mask, currency]);
   }
 }
 
 export async function syncConnection(connectionID: string, replayMetadata = false): Promise<void> {
-  const connectionResult = await pool.query<{ id: string; user_id: string; encrypted_token: string; sync_cursor: string | null }>(
-    "SELECT id, user_id, encrypted_token, sync_cursor FROM provider_connections WHERE id = $1 AND status = 'active'", [connectionID]);
+  const connectionResult = await pool.query<{ id: string; user_id: string; encrypted_token: string; sync_cursor: string | null; metadata: { institutionID?: string } }>(
+    "SELECT id, user_id, encrypted_token, sync_cursor, metadata FROM provider_connections WHERE id = $1 AND status = 'active'", [connectionID]);
   const connection = connectionResult.rows[0];
   if (!connection) return;
   const accessToken = decryptToken(connection.encrypted_token), originalCursor = replayMetadata ? null : connection.sync_cursor;
+  if (!connection.metadata.institutionID) {
+    const item = await plaid<{ item: { institution_id?: string | null } }>("/item/get", { access_token: accessToken });
+    if (item.item.institution_id) {
+      await pool.query(
+        "UPDATE provider_connections SET metadata=metadata || $1::jsonb WHERE id=$2",
+        [JSON.stringify({ institutionID: item.item.institution_id }), connection.id]
+      );
+    }
+  }
   for (let restart = 0; restart < 3; restart++) {
     let cursor = originalCursor ?? undefined;
     const pages: SyncResponse[] = [];
