@@ -124,21 +124,31 @@ struct FocusReviewView: View {
     let transactions: [TransactionRecord]
     @State private var dragOffset: CGSize = .zero
     @State private var splitTransaction: TransactionRecord?
+    @State private var deferredIDs = Set<UUID>()
+    @State private var randomizedID: UUID?
 
     private var remaining: [TransactionRecord] {
         transactions.filter { $0.state == .needsReview && !$0.isCredit && !$0.isRemovedFromSource }.sorted { $0.date > $1.date }
+    }
+    private var currentTransaction: TransactionRecord? {
+        if let randomizedID, let randomized = remaining.first(where: { $0.id == randomizedID }) { return randomized }
+        return remaining.first(where: { !deferredIDs.contains($0.id) }) ?? remaining.first
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 LinearGradient(colors: [Color(.systemGroupedBackground), Color.indigo.opacity(0.08)], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
-                if let transaction = remaining.first {
+                if let transaction = currentTransaction {
                     VStack(spacing: 18) {
                         HStack {
                             Text("\(remaining.count.formatted()) left").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                             Spacer()
-                            Text("Swipe left personal · right shared").font(.caption).foregroundStyle(.secondary)
+                            Button { randomize(excluding: transaction.id) } label: {
+                                Label("Random", systemImage: "dice.fill")
+                            }
+                            .font(.caption.weight(.semibold)).buttonStyle(.bordered)
+                            .disabled(remaining.count < 2)
                         }.padding(.horizontal, 4)
                         focusCard(transaction)
                             .offset(x: dragOffset.width, y: dragOffset.height * 0.15)
@@ -155,14 +165,22 @@ struct FocusReviewView: View {
                                 else if value.translation.width > 95 { classify(transaction, as: .sharedDraft) }
                                 else { withAnimation(.spring) { dragOffset = .zero } }
                             })
-                        HStack(spacing: 12) {
+                        HStack(spacing: 8) {
                             Button { classify(transaction, as: .personal) } label: {
-                                Label("Personal", systemImage: "person.fill").frame(maxWidth: .infinity).frame(height: 44)
+                                VStack(spacing: 3) { Image(systemName: "person.fill"); Text("Personal").font(.caption.weight(.semibold)) }
+                                    .frame(maxWidth: .infinity).frame(height: 50)
                             }.buttonStyle(.bordered).tint(.secondary)
+                            Button { deferForLater(transaction) } label: {
+                                VStack(spacing: 3) { Image(systemName: "clock.arrow.circlepath"); Text("Later").font(.caption.weight(.semibold)) }
+                                    .frame(maxWidth: .infinity).frame(height: 50)
+                            }.buttonStyle(.bordered).tint(.orange)
                             Button { splitTransaction = transaction } label: {
-                                Label("Split", systemImage: "person.2.fill").frame(maxWidth: .infinity).frame(height: 44)
+                                VStack(spacing: 3) { Image(systemName: "person.2.fill"); Text("Split").font(.caption.weight(.semibold)) }
+                                    .frame(maxWidth: .infinity).frame(height: 50)
                             }.buttonStyle(.borderedProminent).tint(.indigo)
                         }
+                        Text("Swipe left for personal · right for shared")
+                            .font(.caption).foregroundStyle(.secondary)
                     }.padding(18)
                 } else {
                     ReviewCompleteView(done: { dismiss() })
@@ -219,8 +237,25 @@ struct FocusReviewView: View {
             transaction.reviewNeedsSync = !session.isDemoMode
             try? modelContext.save()
             session.scheduleReviewPersistence(in: modelContext)
+            deferredIDs.remove(transaction.id)
+            randomizedID = nil
             dragOffset = .zero
         }
+    }
+
+    private func deferForLater(_ transaction: TransactionRecord) {
+        deferredIDs.insert(transaction.id)
+        randomizedID = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if remaining.allSatisfy({ deferredIDs.contains($0.id) }) { deferredIDs.removeAll() }
+        withAnimation(.snappy) { dragOffset = .zero }
+    }
+
+    private func randomize(excluding currentID: UUID) {
+        let choices = remaining.filter { $0.id != currentID }
+        guard let next = choices.randomElement() else { return }
+        randomizedID = next.id
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 
     private func suggestion(for transaction: TransactionRecord) -> String? {
