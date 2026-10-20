@@ -14,6 +14,9 @@ struct RootView: View {
             if session.isAuthenticated { MainTabView() }
             else { OnboardingView() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .lazySplitSessionExpired).receive(on: RunLoop.main)) { notification in
+            session.expireAuthentication(message: notification.object as? String)
+        }
         .alert("Something went wrong", isPresented: Binding(get: { session.lastError != nil }, set: { if !$0 { session.lastError = nil } })) {
             Button("OK", role: .cancel) { session.lastError = nil }
         } message: { Text(session.lastError ?? "") }

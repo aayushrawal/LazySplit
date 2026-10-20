@@ -42,6 +42,13 @@ actor APIClient {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             let message = (try? JSONDecoder.api.decode(ServerError.self, from: data).message) ?? "Request failed (\(http.statusCode))."
+            // Reinstalling an app does not necessarily remove its Keychain items. If the
+            // server-side session has expired, stop treating that stale token as a valid
+            // login and let the UI present authentication again.
+            if http.statusCode == 401, !path.hasPrefix("/v1/auth/") {
+                KeychainStore.delete("sessionToken")
+                NotificationCenter.default.post(name: .lazySplitSessionExpired, object: message)
+            }
             throw APIError.server(message)
         }
         return try JSONDecoder.api.decode(T.self, from: data)
@@ -217,6 +224,10 @@ actor APIClient {
         let response: PublishResponse = try await request("/v1/splitwise/publish", method: "POST", body: body, idempotencyKey: UUID().uuidString)
         return response.expenseID
     }
+}
+
+extension Notification.Name {
+    static let lazySplitSessionExpired = Notification.Name("LazySplit.sessionExpired")
 }
 
 enum KeychainStore {

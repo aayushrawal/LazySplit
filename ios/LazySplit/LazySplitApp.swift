@@ -230,6 +230,12 @@ final class AppSession {
         isDemoMode = false
         isAuthenticated = false
     }
+
+    func expireAuthentication(message: String? = nil) {
+        guard !isDemoMode else { return }
+        signOut()
+        lastError = message ?? "Your LazySplit session expired. Sign in again to continue."
+    }
 }
 
 enum OnboardingStep: Int, CaseIterable {
