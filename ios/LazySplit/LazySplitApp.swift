@@ -69,6 +69,9 @@ final class AppSession {
         defer { isRefreshingTransactions = false }
         do {
             await syncReviewDecisions(in: context)
+            // Pull-to-refresh must ask Plaid for new data before rereading the backend.
+            // Passive refreshes stay lightweight; the worker keeps cursors current.
+            if force { try await api.syncPlaid() }
             // A swipe or Undo may finish syncing while this read is in flight.
             let existing = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo }
             let reviewVersions = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, ($0.updatedAt, $0.reviewNeedsSync)) })

@@ -81,6 +81,14 @@ export async function plaidRoutes(app: FastifyInstance): Promise<void> {
     return {};
   });
 
+  app.post("/v1/plaid/sync", { preHandler: requireUser }, async (request, reply) => {
+    const result = await syncActiveConnections(request.userID);
+    if (result.syncedCount === 0 && result.failedCount > 0) {
+      return reply.code(502).send({ message: "Plaid could not refresh the connected accounts. Try again shortly or reconnect accounts that need attention." });
+    }
+    return result;
+  });
+
   app.delete("/v1/plaid", { preHandler: requireUser }, async (request) => {
     const connections = await pool.query<{ encrypted_token: string }>(
       "SELECT encrypted_token FROM provider_connections WHERE user_id=$1 AND provider='plaid'",
@@ -248,6 +256,26 @@ export async function syncConnection(connectionID: string, replayMetadata = fals
       if (code !== "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" || restart === 2) throw error;
     }
   }
+}
+
+export async function syncActiveConnections(userID?: string): Promise<{ syncedCount: number; failedCount: number }> {
+  const result = await pool.query<{ id: string }>(
+    `SELECT id FROM provider_connections
+     WHERE provider='plaid' AND status='active' AND ($1::uuid IS NULL OR user_id=$1)
+     ORDER BY updated_at ASC`,
+    [userID ?? null]
+  );
+  let syncedCount = 0, failedCount = 0;
+  for (const connection of result.rows) {
+    try {
+      await syncConnection(connection.id);
+      syncedCount += 1;
+    } catch (error) {
+      failedCount += 1;
+      console.error("Plaid scheduled sync failed:", connection.id, error instanceof Error ? error.message : "unknown error");
+    }
+  }
+  return { syncedCount, failedCount };
 }
 
 async function applyPages(connection: { id: string; user_id: string }, pages: SyncResponse[], cursor: string): Promise<void> {

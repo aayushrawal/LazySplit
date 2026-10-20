@@ -80,6 +80,10 @@ actor APIClient {
         return HostedPlaidLink(sessionID: response.sessionID, url: url)
     }
 
+    func syncPlaid() async throws {
+        let _: PlaidSyncResponse = try await request("/v1/plaid/sync", method: "POST")
+    }
+
     func completePlaidHostedLink(sessionID: UUID) async throws -> HostedPlaidStatus {
         let response: HostedPlaidStatusResponse = try await request("/v1/plaid/hosted-link/\(sessionID.uuidString)/complete", method: "POST")
         return HostedPlaidStatus(state: response.status, connectedCount: response.connectedCount, message: response.message)
@@ -386,6 +390,7 @@ private struct HostedPlaidLinkResponse: Decodable { let sessionID: UUID; let hos
 private struct HostedPlaidStatusResponse: Decodable { let status: String; let connectedCount: Int; let message: String? }
 private struct EmptyResponse: Decodable {}
 private struct FriendsResponse: Decodable { let friends: [SplitwiseFriend] }
+private struct PlaidSyncResponse: Decodable { let syncedCount: Int; let failedCount: Int }
 private struct FriendAliasBody: Encodable { let alias: String? }
 private struct FriendOrderBody: Encodable { let friendIDs: [Int] }
 private struct FriendGroupBody: Encodable { let name: String; let friendIDs: [Int] }
