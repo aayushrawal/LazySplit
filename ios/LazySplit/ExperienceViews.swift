@@ -153,6 +153,12 @@ struct FocusReviewView: View {
                         focusCard(transaction)
                             .offset(x: dragOffset.width, y: dragOffset.height * 0.15)
                             .rotationEffect(.degrees(Double(dragOffset.width / 24)))
+                            .contentShape(.rect)
+                            .onTapGesture {
+                                guard abs(dragOffset.width) < 12, abs(dragOffset.height) < 12 else { return }
+                                splitTransaction = transaction
+                                UISelectionFeedbackGenerator().selectionChanged()
+                            }
                             .overlay(alignment: dragOffset.width < 0 ? .topTrailing : .topLeading) {
                                 if abs(dragOffset.width) > 35 {
                                     Label(dragOffset.width < 0 ? "PERSONAL" : "SHARED", systemImage: dragOffset.width < 0 ? "person.fill" : "person.2.fill")
@@ -165,6 +171,8 @@ struct FocusReviewView: View {
                                 else if value.translation.width > 95 { classify(transaction, as: .sharedDraft) }
                                 else { withAnimation(.spring) { dragOffset = .zero } }
                             })
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityHint("Opens transaction details. Swipe left for personal or right for shared.")
                         HStack(spacing: 8) {
                             Button { classify(transaction, as: .personal) } label: {
                                 VStack(spacing: 3) { Image(systemName: "person.fill"); Text("Personal").font(.caption.weight(.semibold)) }
