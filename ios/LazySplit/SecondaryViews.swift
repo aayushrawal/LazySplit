@@ -50,16 +50,10 @@ struct CardsAccountsView: View {
         let accountValues = accounts
         let selectedAccount = accountValues.first { $0.id == selectedAccountID } ?? accountValues.first
         List {
-            Section("Add or refresh") {
-                PlaidConnectRow(message: $message) { Task { await refreshConnections(refreshTransactions: true) } }
-                Button { importAccount = nil; showingImporter = true } label: { Label("Upload statements", systemImage: "doc.badge.plus") }
-                Button { showingManualAccount = true } label: { Label("Add account manually", systemImage: "creditcard.badge.plus") }
-            }
-
             if accountValues.isEmpty {
                 Section { ContentUnavailableView("No accounts yet", systemImage: "creditcard", description: Text("Connect through Plaid or add a statement-only account such as Apple Card.")) }
             } else {
-                Section("Choose an account") {
+                Section("Your wallet") {
                     ScrollView(.horizontal) {
                         HStack(spacing: 10) {
                             ForEach(accountValues) { account in
@@ -87,6 +81,12 @@ struct CardsAccountsView: View {
                         }
                     }
                 }
+            }
+
+            Section("Connections") {
+                PlaidConnectRow(message: $message) { Task { await refreshConnections(refreshTransactions: true) } }
+                Text("Connect supported institutions with Plaid. Use + for Apple Card and statement-only accounts.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Splitwise") {
@@ -121,6 +121,10 @@ struct CardsAccountsView: View {
         .refreshable { await refreshConnections(refreshTransactions: true) }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Button { importAccount = nil; showingImporter = true } label: { Label("Upload statements", systemImage: "doc.badge.plus") }
+                    Button { showingManualAccount = true } label: { Label("Add account manually", systemImage: "creditcard.badge.plus") }
+                } label: { Label("Add", systemImage: "plus") }
                 Button { Task { await refreshConnections(refreshTransactions: true) } } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -183,21 +187,30 @@ private struct AccountSelectorCard: View {
     let action: () -> Void
 
     var body: some View {
+        let latest = account.transactions.map(\.date).max()
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 7) {
                 HStack {
                     Image(systemName: account.connected ? "creditcard.fill" : "creditcard")
                     Spacer()
-                    if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(.white) }
+                    Image(systemName: account.connected ? "checkmark.icloud.fill" : "doc.fill")
+                        .font(.caption).foregroundStyle(.white.opacity(0.85))
                 }
                 Text(account.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Text(account.mask.isEmpty ? account.currencyCode : "•••• \(account.mask)")
-                    .font(.caption.monospacedDigit()).foregroundStyle(selected ? .white.opacity(0.82) : .secondary)
+                    .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.82))
+                Spacer(minLength: 0)
+                Text(latest.map { "Updated \($0.formatted(.relative(presentation: .named)))" } ?? "Ready for statements")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
             }
-            .foregroundStyle(selected ? .white : .primary)
-            .padding(12).frame(width: 154, height: 104, alignment: .leading)
-            .background(selected ? Color.indigo : Color.secondary.opacity(0.1), in: .rect(cornerRadius: 16))
-            .overlay { RoundedRectangle(cornerRadius: 16).stroke(selected ? Color.indigo : Color.secondary.opacity(0.12)) }
+            .foregroundStyle(.white)
+            .padding(14).frame(width: 180, height: 118, alignment: .leading)
+            .background(
+                LinearGradient(colors: selected ? [.indigo, .blue] : [.gray.opacity(0.85), .gray.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: .rect(cornerRadius: 18)
+            )
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(selected ? Color.white.opacity(0.65) : Color.clear, lineWidth: 2) }
+            .shadow(color: selected ? Color.indigo.opacity(0.25) : .black.opacity(0.08), radius: selected ? 10 : 4, y: 4)
         }.buttonStyle(.plain)
         .accessibilityLabel("View \(account.name)\(account.mask.isEmpty ? "" : ", ending \(account.mask)")")
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -208,7 +221,7 @@ private struct AccountHistoryCard: View {
     let account: AccountPresentation
     let onUpload: () -> Void
     let onSync: () -> Void
-    @AppStorage("accounts.historyMonthCount") private var historyMonthCount = 48
+    @AppStorage("accounts.historyMonthCount") private var historyMonthCount = 12
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
     var body: some View {
@@ -288,7 +301,7 @@ enum AccountHistoryWindow {
     static let options = [12, 24, 36, 48]
 
     static func normalized(_ monthCount: Int) -> Int {
-        options.contains(monthCount) ? monthCount : 48
+        options.contains(monthCount) ? monthCount : 12
     }
 
     static func monthStarts(monthCount: Int, endingAt date: Date, calendar: Calendar = .current) -> [Date] {
@@ -381,7 +394,7 @@ struct OutboxView: View {
                 }
             }
         }
-        .navigationTitle("Outbox")
+        .navigationTitle("Activity")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Publish all") { Task { await publishAll() } }.disabled(publishing || !visibleAttempts.contains(where: { $0.status == "queued" || $0.status == "failed" }))

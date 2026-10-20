@@ -78,7 +78,7 @@ struct FriendsManagementView: View {
             if session.isDemoMode { Section { Text("Changes in demo mode last until you leave the demo.").font(.caption).foregroundStyle(.secondary) } }
             if let message { Section { Text(message).foregroundStyle(.secondary) } }
         }
-        .navigationTitle("Friends")
+        .navigationTitle("People")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { if sort == .custom && !friends.isEmpty { EditButton() } }
             ToolbarItem(placement: .topBarTrailing) { Button { Task { await load() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(loading) }

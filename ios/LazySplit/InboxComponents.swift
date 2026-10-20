@@ -172,7 +172,7 @@ struct InboxGroupHeader: View {
                         .font(.caption.weight(.bold)).foregroundStyle(.tertiary)
                 }
                 HStack(spacing: 4) {
-                    Text("\(group.transactions.count) charges")
+                    Text(group.reviewCount > 0 ? "\(group.reviewCount) left to review" : "\(group.transactions.count) charges")
                     if group.pendingCount > 0 { Text("· \(group.pendingCount) pending") }
                 }
                 .font(.caption).foregroundStyle(.secondary)
@@ -195,6 +195,7 @@ struct InboxGroupHeader: View {
 struct InboxAccountLegend: View {
     let accounts: [TransactionRecord]
     let colors: [String: Int]
+    var selectedAccount: Binding<String?>? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -204,14 +205,15 @@ struct InboxAccountLegend: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
+                        if let selectedAccount {
+                            legendButton(title: "All accounts", key: nil, color: .indigo, selection: selectedAccount)
+                        }
                         ForEach(accounts, id: \.accountColorKey) { account in
-                            HStack(spacing: 6) {
-                                Circle().fill(AccountColors.color(for: account.accountColorKey, in: colors))
-                                    .frame(width: 8, height: 8).accessibilityHidden(true)
-                                Text(account.cardLabel).font(.caption.weight(.medium))
-                                    .fixedSize(horizontal: true, vertical: false)
+                            if let selectedAccount {
+                                legendButton(title: account.cardLabel, key: account.cardLabel, color: AccountColors.color(for: account.accountColorKey, in: colors), selection: selectedAccount)
+                            } else {
+                                legendLabel(title: account.cardLabel, color: AccountColors.color(for: account.accountColorKey, in: colors))
                             }
-                            .padding(.horizontal, 4).padding(.vertical, 5)
                         }
                     }.padding(.horizontal, 16)
                 }
@@ -223,6 +225,24 @@ struct InboxAccountLegend: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial)
     }
+
+    private func legendLabel(title: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 8, height: 8).accessibilityHidden(true)
+            Text(title).font(.caption.weight(.medium)).fixedSize(horizontal: true, vertical: false)
+        }.padding(.horizontal, 9).padding(.vertical, 6).background(Color(.tertiarySystemFill), in: .capsule)
+    }
+
+    private func legendButton(title: String, key: String?, color: Color, selection: Binding<String?>) -> some View {
+        Button {
+            withAnimation(.snappy) { selection.wrappedValue = selection.wrappedValue == key && key != nil ? nil : key }
+            UISelectionFeedbackGenerator().selectionChanged()
+        } label: {
+            legendLabel(title: title, color: color)
+                .foregroundStyle(selection.wrappedValue == key ? Color.indigo : .primary)
+                .overlay { Capsule().stroke(selection.wrappedValue == key ? Color.indigo : Color.clear, lineWidth: 1.5) }
+        }.buttonStyle(.plain)
+    }
 }
 
 struct TransactionRow: View {
@@ -232,6 +252,9 @@ struct TransactionRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
+            if let accountColor {
+                Capsule().fill(accountColor).frame(width: 3, height: 38).accessibilityHidden(true)
+            }
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .medium))
                 .frame(width: 36, height: 38)

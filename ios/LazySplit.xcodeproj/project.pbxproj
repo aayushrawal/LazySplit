@@ -23,6 +23,8 @@
 		A1000000000000000000000A /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000004 /* GoogleSignIn */; };
 		A1000000000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* Assets.xcassets */; };
 		A1000000000000000000000C /* FriendsManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* FriendsManagementView.swift */; };
+		A10000000000000000000013 /* ExperienceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* ExperienceViews.swift */; };
+		A10000000000000000000014 /* LazySplitSlothAccountantLogo.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* LazySplitSlothAccountantLogo.png */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -67,6 +69,8 @@
 		A2000000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000000000000000000E /* FriendsManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsManagementView.swift; sourceTree = "<group>"; };
+		A20000000000000000000013 /* ExperienceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExperienceViews.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* LazySplitSlothAccountantLogo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Brand/LazySplitSlothAccountantLogo.png; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -112,12 +116,14 @@
 				A20000000000000000000004 /* RootView.swift */,
 				A2000000000000000000000F /* InboxFilters.swift */,
 				A20000000000000000000010 /* InboxComponents.swift */,
+				A20000000000000000000013 /* ExperienceViews.swift */,
 				A20000000000000000000005 /* SecondaryViews.swift */,
 				A2000000000000000000000E /* FriendsManagementView.swift */,
 				A2000000000000000000000A /* LazySplit.entitlements */,
 				A2000000000000000000000B /* LazySplitDebug.entitlements */,
 				A2000000000000000000000C /* Info.plist */,
 				A2000000000000000000000D /* Assets.xcassets */,
+				A20000000000000000000014 /* LazySplitSlothAccountantLogo.png */,
 			);
 			path = LazySplit;
 			sourceTree = "<group>";
@@ -237,6 +243,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000B /* Assets.xcassets in Resources */,
+				A10000000000000000000014 /* LazySplitSlothAccountantLogo.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -255,6 +262,7 @@
 				A10000000000000000000004 /* RootView.swift in Sources */,
 				A1000000000000000000000F /* InboxFilters.swift in Sources */,
 				A10000000000000000000010 /* InboxComponents.swift in Sources */,
+				A10000000000000000000013 /* ExperienceViews.swift in Sources */,
 				A10000000000000000000005 /* SecondaryViews.swift in Sources */,
 				A1000000000000000000000C /* FriendsManagementView.swift in Sources */,
 			);

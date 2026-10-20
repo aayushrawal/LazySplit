@@ -129,18 +129,18 @@ struct MainTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
+    @Query private var exportAttempts: [ExportAttempt]
     var body: some View {
         TabView {
             NavigationStack { InboxView(reviewScope: .toReview) }
-                .tabItem { Label("Inbox", systemImage: "tray.full") }
+                .tabItem { Label("Review", systemImage: "checklist") }
             NavigationStack { CardsAccountsView() }
                 .tabItem { Label("Accounts", systemImage: "creditcard.and.123") }
             NavigationStack { FriendsManagementView() }
-                .tabItem { Label("Friends", systemImage: "person.2.fill") }
-            NavigationStack { InboxView(reviewScope: .reviewed) }
-                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
-            NavigationStack { OutboxView() }
-                .tabItem { Label("Outbox", systemImage: "paperplane") }
+                .tabItem { Label("People", systemImage: "person.2.fill") }
+            NavigationStack { ActivityView() }
+                .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
+                .badge(exportAttempts.filter { $0.status == "queued" || $0.status == "failed" }.count)
         }
         .tint(.indigo)
         .task(id: session.isDemoMode) {
@@ -197,6 +197,8 @@ struct InboxView: View {
     @State private var newExpanded = true
     @State private var newDisplayLimit = 100
     @State private var didInitializeGroups = false
+    @State private var quickFilter = InboxQuickFilter.all
+    @State private var showingFocusReview = false
     @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
 
@@ -205,12 +207,28 @@ struct InboxView: View {
             DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isRemovedFromSource && !$0.isCredit && $0.amountMinor > 0
         }
         let scopedTransactions = inboxTransactions.filter(reviewScope.includes)
-        let snapshot = InboxSnapshot.make(records: scopedTransactions, demoMode: session.isDemoMode, filters: filters, search: debouncedSearch, grouping: historyGrouping)
+        let quickFilteredTransactions = reviewScope == .toReview ? scopedTransactions.filter(quickFilter.includes) : scopedTransactions
+        let snapshot = InboxSnapshot.make(records: quickFilteredTransactions, demoMode: session.isDemoMode, filters: filters, search: debouncedSearch, grouping: historyGrouping)
         let colors = AccountColors.assignments(for: snapshot.accountKeys, retaining: (try? JSONDecoder().decode([String: Int].self, from: savedAccountColors)) ?? [:])
         let groups = snapshot.historyGroups
         let arrivals = snapshot.newTransactions
         let displayedArrivals = Array(arrivals.prefix(newDisplayLimit))
         List(selection: $selected) {
+            if reviewScope == .toReview {
+                Section {
+                    ReviewSummaryCard(transactions: scopedTransactions, allPostedTransactions: inboxTransactions) {
+                        showingFocusReview = true
+                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+                    .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                }
+            } else {
+                Section {
+                    WeeklyRecapCard(transactions: scopedTransactions)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                }
+            }
             if session.isRefreshingTransactions || filters.validationError != nil || session.reviewSyncError != nil || session.transactionRefreshError != nil {
                 Section {
                 if session.isRefreshingTransactions { ProgressView("Updating charges…") }
@@ -303,10 +321,19 @@ struct InboxView: View {
         .listSectionSpacing(14)
         .scrollContentBackground(.hidden)
         .background(Color(.systemGroupedBackground))
-        .navigationTitle(reviewScope.navigationTitle)
+        .navigationTitle(reviewScope == .toReview ? "Review" : "Activity")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
-            InboxAccountLegend(accounts: snapshot.accountLegend, colors: colors)
+            VStack(spacing: 0) {
+                InboxAccountLegend(accounts: snapshot.accountLegend, colors: colors, selectedAccount: Binding(
+                    get: { filters.account },
+                    set: { filters.account = $0 }
+                ))
+                if reviewScope == .toReview { InboxQuickFilterBar(selection: $quickFilter) }
+            }
+        }
+        .fullScreenCover(isPresented: $showingFocusReview) {
+            FocusReviewView(transactions: scopedTransactions)
         }
         .refreshable { await session.refreshTransactions(in: modelContext, force: true) }
         .onChange(of: snapshot.accountKeys, initial: true) { _, _ in
@@ -320,6 +347,7 @@ struct InboxView: View {
         }
         .onChange(of: search) { _, _ in newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
         .onChange(of: filters) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
+        .onChange(of: quickFilter) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; selected.removeAll() }
         .onChange(of: historyGrouping) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; selected.removeAll() }
         .onChange(of: "\(arrivals.count):\(arrivals.first?.id.uuidString ?? "none")") { old, new in
             if old != new { newExpanded = true; newDisplayLimit = 100 }
