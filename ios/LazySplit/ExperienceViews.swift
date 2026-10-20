@@ -2,6 +2,11 @@ import SwiftData
 import SwiftUI
 import UIKit
 
+private struct FocusReviewUndoEntry {
+    let transactionID: UUID
+    let previousState: ReviewState
+}
+
 enum InboxQuickFilter: String, CaseIterable, Identifiable {
     case all, new, large, dining, travel
 
@@ -126,6 +131,7 @@ struct FocusReviewView: View {
     @State private var splitTransaction: TransactionRecord?
     @State private var deferredIDs = Set<UUID>()
     @State private var randomizedID: UUID?
+    @State private var undoHistory = [FocusReviewUndoEntry]()
 
     private var remaining: [TransactionRecord] {
         transactions.filter { $0.state == .needsReview && !$0.isCredit && !$0.isRemovedFromSource }.sorted { $0.date > $1.date }
@@ -144,6 +150,11 @@ struct FocusReviewView: View {
                         HStack {
                             Text("\(remaining.count.formatted()) left").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                             Spacer()
+                            Button { undoLastReview() } label: {
+                                Label("Undo", systemImage: "arrow.uturn.backward")
+                            }
+                            .font(.caption.weight(.semibold)).buttonStyle(.bordered)
+                            .disabled(undoHistory.isEmpty)
                             Button { randomize(excluding: transaction.id) } label: {
                                 Label("Random", systemImage: "dice.fill")
                             }
@@ -237,10 +248,12 @@ struct FocusReviewView: View {
     }
 
     private func classify(_ transaction: TransactionRecord, as state: ReviewState) {
+        let previousState = transaction.state
         let direction: CGFloat = state == .personal ? -480 : 480
         withAnimation(.easeIn(duration: 0.18)) { dragOffset.width = direction }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            undoHistory.append(FocusReviewUndoEntry(transactionID: transaction.id, previousState: previousState))
             transaction.state = state
             transaction.reviewNeedsSync = !session.isDemoMode
             try? modelContext.save()
@@ -264,6 +277,19 @@ struct FocusReviewView: View {
         guard let next = choices.randomElement() else { return }
         randomizedID = next.id
         UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func undoLastReview() {
+        guard let entry = undoHistory.popLast(),
+              let transaction = transactions.first(where: { $0.id == entry.transactionID }) else { return }
+        transaction.state = entry.previousState
+        transaction.reviewNeedsSync = !session.isDemoMode
+        deferredIDs.remove(transaction.id)
+        randomizedID = transaction.id
+        dragOffset = .zero
+        try? modelContext.save()
+        session.scheduleReviewPersistence(in: modelContext)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     private func suggestion(for transaction: TransactionRecord) -> String? {
