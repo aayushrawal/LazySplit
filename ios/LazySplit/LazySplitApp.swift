@@ -154,12 +154,20 @@ final class AppSession {
         let token = KeychainStore.read("sessionToken")
         do {
             // Preserve personal/shared decisions made in versions that only saved them locally.
-            for record in try context.fetch(FetchDescriptor<TransactionRecord>()) where !record.isDemo && !record.reviewHasSynced && [.personal, .sharedDraft].contains(record.state) {
+            let legacyDescriptor = FetchDescriptor<TransactionRecord>(predicate: #Predicate {
+                !$0.isDemo && !$0.reviewHasSynced && ($0.stateRaw == "personal" || $0.stateRaw == "sharedDraft")
+            })
+            let legacy = try context.fetch(legacyDescriptor)
+            for record in legacy {
                 record.reviewNeedsSync = true
             }
-            try context.save()
-            // Send bounded batches instead of issuing one network request and one SwiftData fetch per swipe.
-            let pending = try context.fetch(FetchDescriptor<TransactionRecord>()).filter { !$0.isDemo && $0.reviewNeedsSync }
+            if !legacy.isEmpty { try context.save() }
+            // Fetch only dirty review rows. Fetching the full multi-year ledger here
+            // blocked the main actor after every swipe and made the UI appear frozen.
+            let pendingDescriptor = FetchDescriptor<TransactionRecord>(predicate: #Predicate {
+                !$0.isDemo && $0.reviewNeedsSync
+            })
+            let pending = try context.fetch(pendingDescriptor)
             for batchStart in stride(from: 0, to: pending.count, by: 500) {
                 guard !isDemoMode, isAuthenticated, KeychainStore.read("sessionToken") == token else { return }
                 let batch = Array(pending[batchStart..<min(batchStart + 500, pending.count)])
@@ -180,7 +188,7 @@ final class AppSession {
     func scheduleReviewSync(in context: ModelContext) {
         scheduledReviewSync?.cancel()
         scheduledReviewSync = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(300)) }
+            do { try await Task.sleep(for: .milliseconds(500)) }
             catch { return }
             guard !Task.isCancelled, let self else { return }
             await self.syncReviewDecisions(in: context)

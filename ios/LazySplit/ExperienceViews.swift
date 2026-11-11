@@ -70,12 +70,9 @@ struct InboxQuickFilterBar: View {
 
 struct ReviewSummaryCard: View {
     let transactions: [TransactionRecord]
-    let allPostedTransactions: [TransactionRecord]
+    let reviewedCount: Int
     let reviewNext: () -> Void
 
-    private var reviewedCount: Int {
-        allPostedTransactions.filter { $0.state != .needsReview && $0.state != .pending }.count
-    }
     private var reviewableCount: Int { transactions.filter { $0.state == .needsReview }.count }
     private var progress: Double {
         let total = reviewedCount + reviewableCount

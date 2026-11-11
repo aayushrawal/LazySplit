@@ -183,8 +183,9 @@ struct MainTabView: View {
 struct InboxView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
-    @Query(sort: \TransactionRecord.date, order: .reverse) private var allTransactions: [TransactionRecord]
+    @Query private var allTransactions: [TransactionRecord]
     let reviewScope: InboxReviewScope
+    @State private var reviewedCount = 0
     @State private var filters = InboxFilters()
     @State private var showingFilters = false
     @State private var search = ""
@@ -202,6 +203,23 @@ struct InboxView: View {
     @AppStorage("inbox.colorCodeByAccount") private var colorCodeByAccount = false
     @AppStorage("inbox.accountColors") private var savedAccountColors = Data()
 
+    init(reviewScope: InboxReviewScope) {
+        self.reviewScope = reviewScope
+        if reviewScope == .toReview {
+            _allTransactions = Query(
+                filter: #Predicate<TransactionRecord> { $0.stateRaw == "pending" || $0.stateRaw == "needsReview" },
+                sort: \TransactionRecord.date,
+                order: .reverse
+            )
+        } else {
+            _allTransactions = Query(
+                filter: #Predicate<TransactionRecord> { $0.stateRaw != "pending" && $0.stateRaw != "needsReview" },
+                sort: \TransactionRecord.date,
+                order: .reverse
+            )
+        }
+    }
+
     var body: some View {
         let inboxTransactions = allTransactions.filter {
             DemoData.shouldDisplay($0, inDemoMode: session.isDemoMode) && !$0.isRemovedFromSource && !$0.isCredit && $0.amountMinor > 0
@@ -216,7 +234,7 @@ struct InboxView: View {
         List(selection: $selected) {
             if reviewScope == .toReview {
                 Section {
-                    ReviewSummaryCard(transactions: scopedTransactions, allPostedTransactions: inboxTransactions) {
+                    ReviewSummaryCard(transactions: scopedTransactions, reviewedCount: reviewedCount) {
                         showingFocusReview = true
                     }
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
@@ -345,6 +363,10 @@ struct InboxView: View {
                 debouncedSearch = search
             } catch {}
         }
+        .task(id: "\(scopedTransactions.count):\(session.isDemoMode)") {
+            guard reviewScope == .toReview else { return }
+            refreshReviewedCount()
+        }
         .onChange(of: search) { _, _ in newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
         .onChange(of: filters) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; newExpanded = true; newDisplayLimit = 100; selected.removeAll() }
         .onChange(of: quickFilter) { _, _ in collapsedGroups.removeAll(); didInitializeGroups = false; selected.removeAll() }
@@ -437,6 +459,20 @@ struct InboxView: View {
                 Button { set(transaction, to: .personal) } label: { Label("Personal", systemImage: "person.fill") }.tint(.gray)
             }
         }
+    }
+
+    private func refreshReviewedCount() {
+        let descriptor: FetchDescriptor<TransactionRecord>
+        if session.isDemoMode {
+            descriptor = FetchDescriptor(predicate: #Predicate {
+                $0.isDemo && $0.stateRaw != "pending" && $0.stateRaw != "needsReview" && !$0.isCredit && !$0.isRemovedFromSource && $0.amountMinor > 0
+            })
+        } else {
+            descriptor = FetchDescriptor(predicate: #Predicate {
+                !$0.isDemo && $0.stateRaw != "pending" && $0.stateRaw != "needsReview" && !$0.isCredit && !$0.isRemovedFromSource && $0.amountMinor > 0
+            })
+        }
+        reviewedCount = (try? modelContext.fetchCount(descriptor)) ?? 0
     }
 
     private func markNewSeen(_ records: [TransactionRecord]) {
